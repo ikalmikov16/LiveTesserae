@@ -1,0 +1,67 @@
+---
+description: Frontend React/TypeScript conventions
+globs: frontend/**/*.tsx, frontend/**/*.ts
+alwaysApply: false
+---
+
+# Frontend Conventions
+
+## Package Manager
+
+Use **Bun** for all frontend operations:
+- `bun install` - install dependencies
+- `bun run dev` - start dev server
+- `bun run build` - production build
+- `bun add <package>` - add dependency
+
+## React Patterns
+
+```tsx
+// ✅ Functional components with TypeScript
+interface Props {
+  tileX: number;
+  tileY: number;
+}
+
+export function TileEditor({ tileX, tileY }: Props) {
+  ...
+}
+
+// ✅ Custom hooks for reusable logic
+export function useWebSocket(url: string) {
+  ...
+}
+```
+
+## Canvas Rendering
+
+- Use `requestAnimationFrame` for smooth rendering
+- Only render visible tiles/chunks (viewport culling)
+- Keep canvas refs with `useRef<HTMLCanvasElement>`
+
+## WebSocket
+
+```tsx
+// ✅ Handle reconnection
+useEffect(() => {
+  const ws = new WebSocket(url);
+  ws.onclose = () => setTimeout(reconnect, 1000);
+  return () => ws.close();
+}, []);
+
+// ✅ Parse inline images from base64
+const img = new Image();
+img.src = message.image; // data:image/png;base64,...
+```
+
+## State Management
+
+- Use `useState` for local component state
+- Use `useContext` for shared state (mosaic data, viewport)
+- Avoid Redux unless complexity demands it
+
+## Coordinates
+
+- Tile coords: `(x, y)` where 0 ≤ x, y < 1000
+- Chunk coords: `(cx, cy)` where 0 ≤ cx, cy < 10 (for 100×100 chunks)
+- Convert: `cx = Math.floor(x / 100)`, `cy = Math.floor(y / 100)`

@@ -1,0 +1,45 @@
+---
+description: Backend Python/FastAPI conventions
+globs: backend/**/*.py, lambda/**/*.py
+alwaysApply: false
+---
+
+# Backend Conventions
+
+## FastAPI Patterns
+
+```python
+# ✅ Use async endpoints
+@router.get("/tiles/{x}/{y}")
+async def get_tile(x: int, y: int):
+    ...
+
+# ✅ Use Pydantic models for validation
+class TileUpdate(BaseModel):
+    x: int = Field(ge=0, lt=1000)
+    y: int = Field(ge=0, lt=1000)
+    image: bytes
+```
+
+## Database
+
+- Use `asyncpg` for async PostgreSQL
+- Keep queries in `services/database.py`
+- Tile IDs are strings: `"512:384"`
+- Chunk IDs are strings: `"5:3"`
+
+## S3 Operations
+
+- Use `boto3` with async wrapper or run in thread pool
+- All paths: `tiles/{x}_{y}.png`, `chunks/level{n}/{cx}_{cy}.png`
+- Always set `ContentType: image/png`
+
+## Error Handling
+
+```python
+# ✅ Use HTTPException for API errors
+raise HTTPException(status_code=404, detail="Tile not found")
+
+# ✅ Log errors with context
+logger.error("Failed to save tile", extra={"x": x, "y": y, "error": str(e)})
+```

@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tesserae
+      POSTGRES_PASSWORD: tesserae_local
+      POSTGRES_DB: tesserae
+    ports:
+      - "5433:5432"  # Using 5433 to avoid conflict with local Postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

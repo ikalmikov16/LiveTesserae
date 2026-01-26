@@ -1,0 +1,61 @@
+---
+description: AWS infrastructure conventions
+globs: infrastructure/**/*.tf, infrastructure/**/*.yaml, Dockerfile, docker-compose.yml
+alwaysApply: false
+---
+
+# Infrastructure Conventions
+
+## AWS Services Used
+
+| Service | Purpose |
+|---------|---------|
+| ECS Fargate | Backend containers |
+| RDS PostgreSQL | Tile metadata |
+| S3 | Tile and chunk images |
+| CloudFront | CDN for images |
+| Lambda | Async chunk rendering |
+
+## Terraform Patterns
+
+```hcl
+# ✅ Use variables for environment-specific values
+variable "environment" {
+  type = string
+}
+
+# ✅ Tag all resources
+tags = {
+  Project     = "live-tesserae"
+  Environment = var.environment
+}
+```
+
+## Docker
+
+```dockerfile
+# ✅ Use multi-stage builds
+FROM python:3.11-slim as builder
+# ... install deps ...
+
+FROM python:3.11-slim
+COPY --from=builder /app /app
+```
+
+## Environment Variables
+
+Required for backend:
+- `DATABASE_URL` - PostgreSQL connection string
+- `AWS_S3_BUCKET` - Tile storage bucket
+- `AWS_REGION` - AWS region
+
+## S3 Bucket Structure
+
+```
+s3://live-tesserae-{env}/
+├── tiles/{x}_{y}.png
+└── chunks/
+    ├── level0/full.png
+    ├── level1/{cx}_{cy}.png
+    └── level2/{cx}_{cy}.png
+```

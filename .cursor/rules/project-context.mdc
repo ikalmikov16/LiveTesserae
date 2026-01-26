@@ -1,0 +1,36 @@
+---
+description: Live Tesserae project context and architecture
+alwaysApply: true
+---
+
+# Live Tesserae Project
+
+A collaborative mosaic website with 1M tiles (1000×1000 grid). Each tile is a 32×32 pixel canvas.
+
+## Architecture
+
+- **Frontend**: React + TypeScript + Canvas (using Bun)
+- **Backend**: FastAPI (Python 3.12) with WebSocket support
+- **Database**: PostgreSQL (RDS)
+- **Storage**: S3 for tile/chunk images
+- **CDN**: CloudFront
+- **Compute**: ECS Fargate
+- **Async**: Lambda for chunk rendering
+
+## Key Patterns
+
+- Tiles use sparse storage (default tiles not stored)
+- WebSocket sends inline base64 images for instant updates
+- Chunk-based subscriptions (clients subscribe to visible chunks)
+- Versioned URLs for CDN caching (`?v=17`)
+
+## File Structure
+
+```
+backend/app/     - FastAPI application
+frontend/src/    - React application
+lambda/          - Lambda functions
+infrastructure/  - Terraform/deployment
+```
+
+Refer to DETAILED_PLAN.md and IMPLEMENTATION_ORDER.md for specifics.
