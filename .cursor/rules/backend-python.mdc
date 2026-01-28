@@ -6,40 +6,86 @@ alwaysApply: false
 
 # Backend Conventions
 
+## Folder Structure
+
+```
+backend/app/
+├── api/           # Route handlers (thin, delegate to services)
+├── models/        # Pydantic models for request/response
+├── services/      # Business logic, database, storage
+├── websocket/     # WebSocket handlers
+├── config.py      # Settings from environment
+└── main.py        # FastAPI app setup
+```
+
 ## FastAPI Patterns
 
 ```python
-# ✅ Use async endpoints
+# ✅ Use async endpoints with Path validation
 @router.get("/tiles/{x}/{y}")
-async def get_tile(x: int, y: int):
+async def get_tile(
+    x: int = Path(ge=0, lt=settings.grid_width),
+    y: int = Path(ge=0, lt=settings.grid_height),
+):
     ...
 
-# ✅ Use Pydantic models for validation
-class TileUpdate(BaseModel):
-    x: int = Field(ge=0, lt=1000)
-    y: int = Field(ge=0, lt=1000)
-    image: bytes
+# ✅ Use response_model for typed responses
+@router.put("/tiles/{x}/{y}", response_model=TileSaveResponse)
+async def save_tile(...):
+    ...
+
+# ✅ Lifespan for startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await db.connect()
+    yield
+    await db.disconnect()
+```
+
+## Service Layer
+
+- **API routes**: Validate input, call services, return responses
+- **Services**: Business logic, database queries, storage operations
+- Keep routes thin, push logic to services
+
+```python
+# ✅ In api/tiles.py - delegate to service
+result = await tile_service.save_tile(x, y, image_data)
+
+# ✅ In services/tiles.py - business logic
+async def save_tile(x: int, y: int, image_data: bytes) -> dict:
+    await storage.save_tile_image(x, y, image_data)
+    row = await db.fetchrow(...)
+    return {...}
 ```
 
 ## Database
 
 - Use `asyncpg` for async PostgreSQL
-- Keep queries in `services/database.py`
+- Singleton `db` object: `from app.services.database import db`
 - Tile IDs are strings: `"512:384"`
 - Chunk IDs are strings: `"5:3"`
 
-## S3 Operations
+## Storage
 
-- Use `boto3` with async wrapper or run in thread pool
-- All paths: `tiles/{x}_{y}.png`, `chunks/level{n}/{cx}_{cy}.png`
-- Always set `ContentType: image/png`
+- **MVP (local)**: `storage/tiles/{cx}/{cy}/{x}_{y}.png`
+- **Production (S3)**: `tiles/{cx}/{cy}/{x}_{y}.png`
+- Clean up saved files if database transaction fails
 
 ## Error Handling
 
 ```python
-# ✅ Use HTTPException for API errors
-raise HTTPException(status_code=404, detail="Tile not found")
+# ✅ Validation helpers in route files
+def validate_coordinates(x: int, y: int) -> None:
+    if not (0 <= x < settings.grid_width):
+        raise HTTPException(status_code=400, detail="...")
 
 # ✅ Log errors with context
-logger.error("Failed to save tile", extra={"x": x, "y": y, "error": str(e)})
+logger.error(f"Failed to save tile {tile_id}: {e}")
 ```
+
+## Configuration
+
+- Use `pydantic_settings.BaseSettings` for config
+- Load from `.env` file
+- Access via `from app.config import settings`

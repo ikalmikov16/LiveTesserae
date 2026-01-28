@@ -1,0 +1,136 @@
+---
+description: UI component patterns with Radix primitives and CSS
+globs: frontend/**/*.tsx, frontend/**/*.css
+alwaysApply: false
+---
+
+# UI Component Patterns
+
+## Radix UI Primitives
+
+Use Radix for accessible, unstyled components:
+
+```tsx
+// ✅ Import from specific packages
+import * as Slider from "@radix-ui/react-slider";
+import * as Dialog from "@radix-ui/react-dialog";
+import * as Popover from "@radix-ui/react-popover";
+import * as Tooltip from "@radix-ui/react-tooltip";
+import * as ToggleGroup from "@radix-ui/react-toggle-group";
+```
+
+## Lucide Icons
+
+Use Lucide for icons (tree-shakeable, import only what you need):
+
+```tsx
+// ✅ Import individual icons
+import { Pencil, PaintBucket, Eraser, Pipette, Undo2, Redo2 } from "lucide-react";
+import { ZoomIn, ZoomOut, RotateCcw, X, Map, Eye, EyeOff } from "lucide-react";
+
+// ✅ Use with consistent sizing
+<Pencil size={18} />
+<PaintBucket size={18} strokeWidth={1.5} />
+
+// ❌ Don't import the entire library
+import * as Icons from "lucide-react";
+```
+
+## Component Structure
+
+```tsx
+// ✅ Wrap Radix with custom styling
+export function ZoomSlider({ value, onChange }: Props) {
+  return (
+    <Slider.Root className="slider-root" value={[value]} onValueChange={([v]) => onChange(v)}>
+      <Slider.Track className="slider-track">
+        <Slider.Range className="slider-range" />
+      </Slider.Track>
+      <Slider.Thumb className="slider-thumb" />
+    </Slider.Root>
+  );
+}
+```
+
+## CSS Styling
+
+Use dedicated CSS files with BEM-like naming:
+
+```css
+/* components/ZoomControls.css */
+.zoom-controls {
+  /* Container */
+}
+.zoom-controls__slider {
+  /* Element */
+}
+.zoom-controls--compact {
+  /* Modifier */
+}
+```
+
+## Design Tokens (CSS Variables)
+
+Define in `index.css`, use everywhere:
+
+```css
+:root {
+  /* Colors */
+  --color-bg-primary: #1a1a1a;
+  --color-bg-secondary: #2a2a2a;
+  --color-bg-glass: rgba(30, 30, 30, 0.8);
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #a0a0a0;
+  --color-accent: #4a9eff;
+  
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  
+  /* Shadows */
+  --shadow-sm: 0 2px 4px rgba(0,0,0,0.2);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+}
+```
+
+## Glassmorphism Pattern
+
+```css
+.glass-panel {
+  background: var(--color-bg-glass);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-lg);
+}
+```
+
+## Animation
+
+```css
+/* Subtle transitions */
+.interactive {
+  transition: all 0.15s ease;
+}
+
+/* Modal/dialog animations */
+.dialog-overlay {
+  animation: fadeIn 0.2s ease;
+}
+.dialog-content {
+  animation: slideUp 0.2s ease;
+}
+```
+
+## Accessibility
+
+- All interactive elements need focus styles
+- Use Radix for keyboard navigation (built-in)
+- Tooltips for icon-only buttons
+- Sufficient color contrast (4.5:1 minimum)

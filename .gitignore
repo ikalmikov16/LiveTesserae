@@ -27,10 +27,17 @@ frontend/node_modules/
 Thumbs.db
 
 # Local storage (for development)
+# Root storage folder
 storage/tiles/*
 storage/chunks/*
 !storage/tiles/.gitkeep
 !storage/chunks/.gitkeep
+
+# Backend storage folder (generated images - DO NOT COMMIT)
+backend/storage/tiles/*
+backend/storage/chunks/*
+!backend/storage/tiles/.gitkeep
+!backend/storage/chunks/.gitkeep
 
 # Logs
 *.log
@@ -40,6 +47,8 @@ logs/
 .env
 .env.local
 .env.*.local
+!.env.example
+backend/.env
 
 # Build outputs
 frontend/dist/

@@ -14,6 +14,26 @@ Use **Bun** for all frontend operations:
 - `bun run build` - production build
 - `bun add <package>` - add dependency
 
+## Folder Structure
+
+Flat organization:
+```
+src/
+├── components/    # React components (PascalCase.tsx)
+├── hooks/         # Custom hooks (useXxx.ts)
+├── utils/         # Helper functions
+├── types/         # TypeScript types/interfaces
+├── config.ts      # App configuration
+└── App.tsx        # Root component
+```
+
+## Styling
+
+Use **plain CSS** files alongside components:
+- Global styles in `App.css` and `index.css`
+- Component-specific styles imported directly
+- Use semantic class names (`.mosaic-canvas`, `.tile-editor`)
+
 ## React Patterns
 
 ```tsx

@@ -20,11 +20,11 @@ Set up the development environment so we can run everything locally.
 
 Get a basic FastAPI server running.
 
-- [ ] Create FastAPI app with health check endpoint
-- [ ] Set up database connection with asyncpg
-- [ ] Create project structure (api/, services/, models/)
-- [ ] Add basic logging
-- [ ] Test endpoint works
+- [x] Create FastAPI app with health check endpoint
+- [x] Set up database connection with asyncpg
+- [x] Create project structure (api/, services/, models/)
+- [x] Add basic logging
+- [x] Test endpoint works
 
 ---
 
@@ -32,13 +32,13 @@ Get a basic FastAPI server running.
 
 Build the core tile CRUD operations.
 
-- [ ] Create database schema (tiles table)
-- [ ] Implement `PUT /api/tiles/{x}/{y}` - save tile
-- [ ] Implement `GET /api/tiles/{x}/{y}` - get tile
-- [ ] Implement `DELETE /api/tiles/{x}/{y}` - reset to default
-- [ ] Local filesystem storage for tile images
-- [ ] Input validation (32×32, valid PNG)
-- [ ] Test all endpoints
+- [x] Create database schema (tiles table)
+- [x] Implement `PUT /api/tiles/{x}/{y}` - save tile
+- [x] Implement `GET /api/tiles/{x}/{y}` - get tile
+- [x] Implement `DELETE /api/tiles/{x}/{y}` - reset to default
+- [x] Local filesystem storage for tile images
+- [x] Input validation (32×32, valid PNG)
+- [x] Test all endpoints
 
 ---
 
@@ -46,12 +46,12 @@ Build the core tile CRUD operations.
 
 Basic React app that displays something.
 
-- [ ] Initialize Vite + React + TypeScript project
-- [ ] Create basic App component
-- [ ] Add a Canvas element
-- [ ] Render a simple grid (just lines for now)
-- [ ] Click detection - log which tile was clicked
-- [ ] Basic styling
+- [x] Initialize Vite + React + TypeScript project
+- [x] Create basic App component
+- [x] Add a Canvas element
+- [x] Render a simple grid (just lines for now)
+- [x] Click detection - log which tile was clicked
+- [x] Basic styling
 
 ---
 
@@ -59,13 +59,13 @@ Basic React app that displays something.
 
 Build the 32×32 drawing interface.
 
-- [ ] Create TileEditor component
-- [ ] 32×32 canvas for drawing
-- [ ] Mouse/touch drawing (click and drag)
-- [ ] Color picker (basic palette or full RGB)
-- [ ] Clear/reset button
-- [ ] Export canvas as PNG data
-- [ ] Save button (calls API later)
+- [x] Create TileEditor component
+- [x] 32×32 canvas for drawing
+- [x] Mouse/touch drawing (click and drag)
+- [x] Color picker (basic palette or full RGB)
+- [x] Clear/reset button
+- [x] Export canvas as PNG data
+- [x] Save button (calls API later)
 
 ---
 
@@ -73,65 +73,65 @@ Build the 32×32 drawing interface.
 
 Wire up the editor to save tiles.
 
-- [ ] Frontend calls `PUT /api/tiles/{x}/{y}` on save
-- [ ] Handle loading/error states
-- [ ] Fetch existing tile when editor opens
-- [ ] Display saved tiles on the main canvas
-- [ ] Test full loop: draw → save → refresh → see tile
+- [x] Frontend calls `PUT /api/tiles/{x}/{y}` on save
+- [x] Handle loading/error states
+- [x] Fetch existing tile when editor opens
+- [x] Display saved tiles on the main canvas
+- [x] Test full loop: draw → save → refresh → see tile
 
 ---
 
-## Step 7: WebSocket Real-Time Updates
+## Step 7: WebSocket Real-Time Updates ✅
 
 Add live updates so changes appear for all users.
 
-- [ ] Add WebSocket endpoint in FastAPI (`/ws`)
-- [ ] Connection manager (track connected clients)
-- [ ] Broadcast tile updates when saved
-- [ ] Frontend WebSocket connection
-- [ ] Handle incoming `tile_update` messages
-- [ ] Render updates without page refresh
-- [ ] Handle disconnect/reconnect
+- [x] Add WebSocket endpoint in FastAPI (`/ws`)
+- [x] Connection manager (track connected clients)
+- [x] Broadcast tile updates when saved
+- [x] Frontend WebSocket connection
+- [x] Handle incoming `tile_update` messages
+- [x] Render updates without page refresh
+- [x] Handle disconnect/reconnect
 
 ---
 
-## Step 8: Chunk Subscriptions
+## Step 8: Chunk Subscriptions ✅
 
 Optimize WebSocket to only send relevant updates.
 
-- [ ] Define chunk system (10×10 grid of chunks)
-- [ ] Add `subscribe`/`unsubscribe` messages
-- [ ] Track subscriptions per connection
-- [ ] Only broadcast to subscribers of affected chunk
-- [ ] Frontend sends subscription based on viewport
-- [ ] Update subscription on pan/zoom
+- [x] Define chunk system (10×10 grid of chunks)
+- [x] Add `subscribe`/`unsubscribe` messages
+- [x] Track subscriptions per connection
+- [x] Only broadcast to subscribers of affected chunk
+- [x] Frontend sends subscription based on viewport
+- [x] Update subscription on pan/zoom (deferred to Step 9)
 
 ---
 
-## Step 9: Zoom & Pan
+## Step 9: Zoom & Pan ✅
 
 Make the mosaic navigable at different scales.
 
-- [ ] Viewport state (center position, zoom level)
-- [ ] Pan with mouse drag
-- [ ] Zoom with scroll wheel
-- [ ] Zoom buttons (+/-)
-- [ ] Constrain to mosaic bounds
-- [ ] Smooth animations (optional)
+- [x] Viewport state (center position, zoom level)
+- [x] Pan with mouse drag
+- [x] Zoom with scroll wheel
+- [x] Zoom buttons (+/-)
+- [x] Initial view: fit entire mosaic centered with padding
+- [x] Update chunk subscriptions on viewport change
 
 ---
 
-## Step 10: Chunk Rendering
+## Step 10: Chunk Rendering ✅
 
-Pre-render zoom levels for performance.
+Pre-render zoom levels for performance using a 3-level pyramid.
 
-- [ ] Define zoom levels (0=full, 1=100×100, 2=20×20, 3=individual)
-- [ ] Chunk renderer function (composite tiles → chunk image)
-- [ ] Trigger re-render when tiles update
-- [ ] Store chunk images locally
-- [ ] Serve chunks via API
-- [ ] Frontend loads chunks at appropriate zoom level
-- [ ] Version tracking for cache busting
+- [x] Define zoom levels (0=overview 1000×1000, 1=chunks 320×320, 2=tiles 32×32)
+- [x] Chunk renderer function (composite tiles → chunk image)
+- [x] Trigger re-render when tiles update (sync on save)
+- [x] Store chunk images locally with version tracking
+- [x] Serve chunks via API with cache headers
+- [x] Frontend loads chunks at appropriate zoom level
+- [x] Version tracking for cache busting
 
 ---
 
@@ -181,14 +181,14 @@ Final touches for MVP.
 | Step | Status | Notes |
 |------|--------|-------|
 | 1. Local Setup | ✅ Complete | |
-| 2. Backend Skeleton | ⬜ Not started | |
-| 3. Tile API | ⬜ Not started | |
-| 4. Frontend Skeleton | ⬜ Not started | |
-| 5. Pixel Editor | ⬜ Not started | |
-| 6. Connect FE ↔ BE | ⬜ Not started | |
-| 7. WebSocket | ⬜ Not started | |
-| 8. Chunk Subscriptions | ⬜ Not started | |
-| 9. Zoom & Pan | ⬜ Not started | |
+| 2. Backend Skeleton | ✅ Complete | |
+| 3. Tile API | ✅ Complete | |
+| 4. Frontend Skeleton | ✅ Complete | |
+| 5. Pixel Editor | ✅ Complete | |
+| 6. Connect FE ↔ BE | ✅ Complete | |
+| 7. WebSocket | ✅ Complete | |
+| 8. Chunk Subscriptions | ✅ Complete | |
+| 9. Zoom & Pan | ✅ Complete | |
 | 10. Chunk Rendering | ⬜ Not started | |
 | 11. AWS Infrastructure | ⬜ Not started | |
 | 12. Deploy | ⬜ Not started | |
