@@ -26,14 +26,7 @@ frontend/node_modules/
 .DS_Store
 Thumbs.db
 
-# Local storage (for development)
-# Root storage folder
-storage/tiles/*
-storage/chunks/*
-!storage/tiles/.gitkeep
-!storage/chunks/.gitkeep
-
-# Backend storage folder (generated images - DO NOT COMMIT)
+# Local storage (for development - generated images, DO NOT COMMIT)
 backend/storage/tiles/*
 backend/storage/chunks/*
 !backend/storage/tiles/.gitkeep
