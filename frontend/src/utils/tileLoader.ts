@@ -68,9 +68,7 @@ class TileLoader {
     }
 
     // Remove from queue if not yet started
-    this.queue = this.queue.filter(
-      (item) => !(item.x === x && item.y === y)
-    );
+    this.queue = this.queue.filter((item) => !(item.x === x && item.y === y));
   }
 
   /**
@@ -95,9 +93,7 @@ class TileLoader {
    */
   cancelNotIn(visibleTiles: Set<string>): void {
     // Cancel queued tiles not in visible set
-    const toCancel = this.queue.filter(
-      (item) => !visibleTiles.has(this.getKey(item.x, item.y))
-    );
+    const toCancel = this.queue.filter((item) => !visibleTiles.has(this.getKey(item.x, item.y)));
 
     for (const item of toCancel) {
       this.cancelTile(item.x, item.y);
@@ -120,11 +116,7 @@ class TileLoader {
       this.activeCount++;
 
       try {
-        const dataUrl = await this.fetchTile(
-          item.x,
-          item.y,
-          item.abortController.signal
-        );
+        const dataUrl = await this.fetchTile(item.x, item.y, item.abortController.signal);
         item.resolve(dataUrl);
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
@@ -142,11 +134,7 @@ class TileLoader {
     }
   }
 
-  private async fetchTile(
-    x: number,
-    y: number,
-    signal: AbortSignal
-  ): Promise<string | null> {
+  private async fetchTile(x: number, y: number, signal: AbortSignal): Promise<string | null> {
     const response = await fetch(`${API_BASE_URL}/api/tiles/${x}/${y}`, {
       signal,
     });

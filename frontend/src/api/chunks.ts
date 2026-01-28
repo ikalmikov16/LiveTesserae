@@ -23,11 +23,7 @@ export interface OverviewVersion {
 /**
  * Get the URL for a chunk image with optional version for cache busting.
  */
-export function getChunkImageUrl(
-  cx: number,
-  cy: number,
-  version?: number,
-): string {
+export function getChunkImageUrl(cx: number, cy: number, version?: number): string {
   const versionParam = version ? `?v=${version}` : "";
   return `${API_BASE_URL}/api/chunks/${cx}/${cy}${versionParam}`;
 }
@@ -35,13 +31,8 @@ export function getChunkImageUrl(
 /**
  * Get the current version of a chunk.
  */
-export async function getChunkVersion(
-  cx: number,
-  cy: number,
-): Promise<ChunkVersion> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/chunks/${cx}/${cy}/version`,
-  );
+export async function getChunkVersion(cx: number, cy: number): Promise<ChunkVersion> {
+  const response = await fetch(`${API_BASE_URL}/api/chunks/${cx}/${cy}/version`);
   if (!response.ok) throw new Error("Failed to get chunk version");
   return response.json();
 }
@@ -69,7 +60,7 @@ export async function getOverviewVersion(): Promise<OverviewVersion> {
 export function loadChunkImage(
   cx: number,
   cy: number,
-  version?: number,
+  version?: number
 ): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -82,9 +73,7 @@ export function loadChunkImage(
 /**
  * Load the mosaic overview image and return it as an HTMLImageElement.
  */
-export function loadOverviewImage(
-  version?: number,
-): Promise<HTMLImageElement> {
+export function loadOverviewImage(version?: number): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);

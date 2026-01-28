@@ -21,7 +21,7 @@ def get_chunk_coords(x: int, y: int) -> tuple[int, int]:
 def get_tile_path(x: int, y: int) -> Path:
     """
     Get hierarchical path for a tile image.
-    
+
     Structure: tiles/{cx}/{cy}/{x}_{y}.png
     Example: tiles/5/3/512_384.png for tile (512, 384) in chunk (5, 3)
     """
@@ -33,25 +33,25 @@ async def ensure_tile_directory(x: int, y: int) -> Path:
     """Ensure the directory for a tile exists, create if needed."""
     tile_path = get_tile_path(x, y)
     directory = tile_path.parent
-    
+
     if not directory.exists():
         directory.mkdir(parents=True, exist_ok=True)
         logger.debug(f"Created directory: {directory}")
-    
+
     return tile_path
 
 
 async def save_tile_image(x: int, y: int, image_data: bytes) -> Path:
     """
     Save tile image to hierarchical filesystem.
-    
+
     Returns the path where the image was saved.
     """
     tile_path = await ensure_tile_directory(x, y)
-    
+
     async with aiofiles.open(tile_path, "wb") as f:
         await f.write(image_data)
-    
+
     logger.debug(f"Saved tile image: {tile_path}")
     return tile_path
 
@@ -59,14 +59,14 @@ async def save_tile_image(x: int, y: int, image_data: bytes) -> Path:
 async def get_tile_image(x: int, y: int) -> bytes | None:
     """
     Read tile image from filesystem.
-    
+
     Returns None if tile doesn't exist (default tile).
     """
     tile_path = get_tile_path(x, y)
-    
+
     if not tile_path.exists():
         return None
-    
+
     async with aiofiles.open(tile_path, "rb") as f:
         return await f.read()
 
@@ -74,23 +74,23 @@ async def get_tile_image(x: int, y: int) -> bytes | None:
 async def delete_tile_image(x: int, y: int) -> bool:
     """
     Delete tile image from filesystem.
-    
+
     Returns True if deleted, False if didn't exist.
     """
     tile_path = get_tile_path(x, y)
-    
+
     if not tile_path.exists():
         return False
-    
+
     await aiofiles.os.remove(tile_path)
     logger.debug(f"Deleted tile image: {tile_path}")
-    
+
     # Clean up empty directories (optional, keeps filesystem tidy)
     try:
         tile_path.parent.rmdir()  # Only removes if empty
     except OSError:
         pass  # Directory not empty, that's fine
-    
+
     return True
 
 
@@ -103,10 +103,10 @@ def ensure_storage_directories() -> None:
     """Ensure base storage directories exist on startup."""
     tiles_dir = Path(settings.tiles_path)
     chunks_dir = Path(settings.chunks_path)
-    
+
     tiles_dir.mkdir(parents=True, exist_ok=True)
     chunks_dir.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info(f"Storage directories ready: {tiles_dir}, {chunks_dir}")
 
 
@@ -133,17 +133,17 @@ def get_chunk_versions_path() -> Path:
 async def save_chunk_image(cx: int, cy: int, image_data: bytes) -> int:
     """
     Save rendered chunk preview and increment version.
-    
+
     Returns the new version number.
     """
     chunk_path = get_chunk_path(cx, cy)
     chunk_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     async with aiofiles.open(chunk_path, "wb") as f:
         await f.write(image_data)
-    
+
     logger.debug(f"Saved chunk image: {chunk_path}")
-    
+
     # Increment and return version
     return await increment_chunk_version(cx, cy)
 
@@ -161,12 +161,12 @@ async def save_mosaic_overview(image_data: bytes) -> int:
     """Save mosaic overview and increment its version."""
     overview_path = get_mosaic_overview_path()
     overview_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     async with aiofiles.open(overview_path, "wb") as f:
         await f.write(image_data)
-    
+
     logger.debug(f"Saved mosaic overview: {overview_path}")
-    
+
     return await increment_overview_version()
 
 

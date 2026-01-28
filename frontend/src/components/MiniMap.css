@@ -1,0 +1,77 @@
+/* =============================================================================
+   MiniMap Component
+   ============================================================================= */
+
+.minimap {
+  position: fixed;
+  top: var(--space-lg);
+  right: var(--space-lg);
+  z-index: 100;
+  padding: var(--space-sm);
+  /* glass-panel class provides the glassmorphism background */
+}
+
+.minimap--collapsed {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: none;
+  color: var(--color-text-primary);
+  transition:
+    background var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.minimap--collapsed:hover {
+  background: var(--color-bg-glass-hover);
+}
+
+.minimap--collapsed:active {
+  transform: scale(0.95);
+}
+
+/* Header */
+.minimap__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-sm);
+}
+
+.minimap__title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  user-select: none;
+}
+
+.minimap__toggle {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.minimap__toggle:hover {
+  background: var(--color-bg-glass-hover);
+  color: var(--color-text-primary);
+}
+
+/* Canvas */
+.minimap__canvas {
+  display: block;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+}

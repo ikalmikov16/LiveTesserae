@@ -1,26 +1,64 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import { usePixelCanvas } from "../hooks/usePixelCanvas";
+import type { Tool } from "./Toolbar";
 import "./PixelCanvas.css";
 
-const PIXEL_SIZE = 10; // Display scale factor
+const PIXEL_SIZE = 9; // Display scale factor (288px for 32px tile)
 
 interface PixelCanvasProps {
   color: string;
+  tool?: Tool;
+  showGrid?: boolean;
+  onColorPick?: (color: string) => void;
+  onChange?: () => void;
   onCanvasReady: (helpers: {
     clear: () => void;
     fill: (color: string) => void;
     getCanvas: () => HTMLCanvasElement;
     loadFromImage: (img: HTMLImageElement) => void;
+    setShowGrid: (show: boolean) => void;
+    undo: () => boolean;
+    redo: () => boolean;
+    canUndo: boolean;
+    canRedo: boolean;
   }) => void;
 }
 
-export function PixelCanvas({ color, onCanvasReady }: PixelCanvasProps) {
+export function PixelCanvas({
+  color,
+  tool = "pencil",
+  showGrid: showGridProp = true,
+  onColorPick,
+  onChange,
+  onCanvasReady,
+}: PixelCanvasProps) {
   const displayCanvasRef = useRef<HTMLCanvasElement>(null);
-  const { setPixel, clear, fill, getCanvas, loadFromImage, canvasSize } = usePixelCanvas();
+  const {
+    setPixel,
+    getPixel,
+    clear,
+    fill,
+    floodFill,
+    getCanvas,
+    loadFromImage,
+    beginDrawing,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    canvasSize,
+  } = usePixelCanvas();
   const [isDrawing, setIsDrawing] = useState(false);
-  const [showGrid, setShowGrid] = useState(true);
+  const [showGrid, setShowGrid] = useState(showGridProp);
+  const [hoverPixel, setHoverPixel] = useState<{ x: number; y: number } | null>(null);
+  const hasStartedDrawingRef = useRef(false);
 
-  const displaySize = canvasSize * PIXEL_SIZE; // 320px
+  const displaySize = canvasSize * PIXEL_SIZE; // 288px
+
+  // Sync showGrid with prop changes
+  useEffect(() => {
+    setShowGrid(showGridProp);
+  }, [showGridProp]);
 
   // Render the pixel data to the display canvas
   const renderDisplay = useCallback(() => {
@@ -40,7 +78,7 @@ export function PixelCanvas({ color, onCanvasReady }: PixelCanvasProps) {
 
     // Draw grid overlay if enabled
     if (showGrid) {
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.1)";
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
       ctx.lineWidth = 1;
 
       for (let i = 0; i <= canvasSize; i++) {
@@ -56,7 +94,32 @@ export function PixelCanvas({ color, onCanvasReady }: PixelCanvasProps) {
         ctx.stroke();
       }
     }
-  }, [getCanvas, displaySize, canvasSize, showGrid]);
+
+    // Draw hover highlight
+    if (hoverPixel) {
+      ctx.strokeStyle = "rgba(74, 158, 255, 0.8)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(
+        hoverPixel.x * PIXEL_SIZE + 1,
+        hoverPixel.y * PIXEL_SIZE + 1,
+        PIXEL_SIZE - 2,
+        PIXEL_SIZE - 2
+      );
+    }
+  }, [getCanvas, displaySize, canvasSize, showGrid, hoverPixel]);
+
+  // Wrap undo/redo to also re-render
+  const handleUndo = useCallback(() => {
+    const result = undo();
+    if (result) renderDisplay();
+    return result;
+  }, [undo, renderDisplay]);
+
+  const handleRedo = useCallback(() => {
+    const result = redo();
+    if (result) renderDisplay();
+    return result;
+  }, [redo, renderDisplay]);
 
   // Expose helpers to parent
   useEffect(() => {
@@ -65,8 +128,8 @@ export function PixelCanvas({ color, onCanvasReady }: PixelCanvasProps) {
         clear();
         renderDisplay();
       },
-      fill: (color: string) => {
-        fill(color);
+      fill: (fillColor: string) => {
+        fill(fillColor);
         renderDisplay();
       },
       getCanvas,
@@ -74,8 +137,26 @@ export function PixelCanvas({ color, onCanvasReady }: PixelCanvasProps) {
         loadFromImage(img);
         renderDisplay();
       },
+      setShowGrid: (show: boolean) => {
+        setShowGrid(show);
+      },
+      undo: handleUndo,
+      redo: handleRedo,
+      canUndo,
+      canRedo,
     });
-  }, [clear, fill, getCanvas, loadFromImage, onCanvasReady, renderDisplay]);
+  }, [
+    clear,
+    fill,
+    getCanvas,
+    loadFromImage,
+    onCanvasReady,
+    renderDisplay,
+    handleUndo,
+    handleRedo,
+    canUndo,
+    canRedo,
+  ]);
 
   // Initial render
   useEffect(() => {
@@ -109,43 +190,102 @@ export function PixelCanvas({ color, onCanvasReady }: PixelCanvasProps) {
     return { x, y };
   };
 
-  // Draw a pixel and update display
-  const drawPixel = (x: number, y: number) => {
-    setPixel(x, y, color);
-    renderDisplay();
+  // Handle tool action at coordinates
+  const handleToolAction = (x: number, y: number, isStart: boolean) => {
+    switch (tool) {
+      case "pencil":
+        if (isStart && !hasStartedDrawingRef.current) {
+          beginDrawing();
+          hasStartedDrawingRef.current = true;
+          onChange?.();
+        }
+        setPixel(x, y, color);
+        renderDisplay();
+        break;
+      case "eraser":
+        if (isStart && !hasStartedDrawingRef.current) {
+          beginDrawing();
+          hasStartedDrawingRef.current = true;
+          onChange?.();
+        }
+        setPixel(x, y, "#ffffff");
+        renderDisplay();
+        break;
+      case "fill":
+        if (isStart) {
+          floodFill(x, y, color);
+          renderDisplay();
+          onChange?.();
+        }
+        break;
+      case "eyedropper":
+        if (isStart) {
+          const pickedColor = getPixel(x, y);
+          onColorPick?.(pickedColor);
+        }
+        break;
+    }
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
     setIsDrawing(true);
+    hasStartedDrawingRef.current = false;
     const coords = getPixelCoords(e);
     if (coords) {
-      drawPixel(coords.x, coords.y);
+      handleToolAction(coords.x, coords.y, true);
     }
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDrawing) return;
     const coords = getPixelCoords(e);
+
+    // Update hover highlight
     if (coords) {
-      drawPixel(coords.x, coords.y);
+      if (hoverPixel?.x !== coords.x || hoverPixel?.y !== coords.y) {
+        setHoverPixel(coords);
+      }
+    } else {
+      setHoverPixel(null);
+    }
+
+    // Draw if mouse is down (for pencil/eraser)
+    if (isDrawing && coords && (tool === "pencil" || tool === "eraser")) {
+      handleToolAction(coords.x, coords.y, false);
     }
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = useCallback(() => {
     setIsDrawing(false);
-  };
+    hasStartedDrawingRef.current = false;
+  }, []);
 
   const handleMouseLeave = () => {
-    setIsDrawing(false);
+    // Don't reset isDrawing on leave - let window mouseup handle it
+    // This prevents issues when dragging outside the canvas
+    setHoverPixel(null);
   };
+
+  // Global mouseup handler to ensure drawing stops even when released outside canvas
+  useEffect(() => {
+    if (!isDrawing) return;
+
+    const handleGlobalMouseUp = () => {
+      setIsDrawing(false);
+      hasStartedDrawingRef.current = false;
+    };
+
+    window.addEventListener("mouseup", handleGlobalMouseUp);
+    return () => window.removeEventListener("mouseup", handleGlobalMouseUp);
+  }, [isDrawing]);
 
   // Touch handlers
   const handleTouchStart = (e: React.TouchEvent) => {
     e.preventDefault();
     setIsDrawing(true);
+    hasStartedDrawingRef.current = false;
     const coords = getPixelCoords(e);
     if (coords) {
-      drawPixel(coords.x, coords.y);
+      handleToolAction(coords.x, coords.y, true);
     }
   };
 
@@ -153,13 +293,26 @@ export function PixelCanvas({ color, onCanvasReady }: PixelCanvasProps) {
     e.preventDefault();
     if (!isDrawing) return;
     const coords = getPixelCoords(e);
-    if (coords) {
-      drawPixel(coords.x, coords.y);
+    if (coords && (tool === "pencil" || tool === "eraser")) {
+      handleToolAction(coords.x, coords.y, false);
     }
   };
 
   const handleTouchEnd = () => {
     setIsDrawing(false);
+    hasStartedDrawingRef.current = false;
+  };
+
+  // Get cursor style based on tool
+  const getCursorStyle = () => {
+    switch (tool) {
+      case "eyedropper":
+        return "crosshair";
+      case "fill":
+        return "cell";
+      default:
+        return "crosshair";
+    }
   };
 
   return (
@@ -169,6 +322,7 @@ export function PixelCanvas({ color, onCanvasReady }: PixelCanvasProps) {
         width={displaySize}
         height={displaySize}
         className="pixel-canvas"
+        style={{ cursor: getCursorStyle() }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -177,16 +331,6 @@ export function PixelCanvas({ color, onCanvasReady }: PixelCanvasProps) {
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
       />
-      <label className="grid-toggle">
-        <input
-          type="checkbox"
-          checked={showGrid}
-          onChange={(e) => {
-            setShowGrid(e.target.checked);
-          }}
-        />
-        Show grid
-      </label>
     </div>
   );
 }

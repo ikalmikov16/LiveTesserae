@@ -23,18 +23,18 @@ async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
     # Startup
     logger.info("Starting Live Tesserae API...")
-    
+
     # Ensure storage directories exist
     ensure_storage_directories()
-    
+
     # Connect to database
     await db.connect()
     await db.init_schema()
-    
+
     logger.info("Live Tesserae API started successfully")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down Live Tesserae API...")
     await db.disconnect()
@@ -70,7 +70,7 @@ app.include_router(ws_router, tags=["websocket"])
 async def health():
     """Health check endpoint with database connectivity status."""
     db_status = "disconnected"
-    
+
     try:
         if db.pool:
             # Test database connection
@@ -80,7 +80,7 @@ async def health():
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
         db_status = f"error: {str(e)}"
-    
+
     return {
         "status": "ok",
         "database": db_status,

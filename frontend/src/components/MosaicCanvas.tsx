@@ -30,6 +30,8 @@ interface MosaicCanvasProps {
   tileUpdate?: TileWithImage | null;
   onTileUpdateProcessed?: () => void;
   onViewportChange?: (offsetX: number, offsetY: number, zoom: number) => void;
+  onOverviewLoad?: (image: HTMLImageElement) => void;
+  navigateTo?: { x: number; y: number } | null;
 }
 
 export function MosaicCanvas({
@@ -37,18 +39,18 @@ export function MosaicCanvas({
   tileUpdate,
   onTileUpdateProcessed,
   onViewportChange,
+  onOverviewLoad,
+  navigateTo,
 }: MosaicCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [canvasSize, setCanvasSize] = useState({
     width: window.innerWidth,
     height: window.innerHeight,
   });
-  const [tileImages, setTileImages] = useState<Map<string, HTMLImageElement>>(
-    new Map()
-  );
+  const [tileImages, setTileImages] = useState<Map<string, HTMLImageElement>>(new Map());
 
   // Viewport state with pan/zoom
-  const { viewport, pan, zoomAt, setZoom, resetView, minZoom, maxZoom } = useViewport(
+  const { viewport, pan, zoomAt, setZoom, setOffset, resetView, minZoom, maxZoom } = useViewport(
     canvasSize.width,
     canvasSize.height
   );
@@ -59,10 +61,15 @@ export function MosaicCanvas({
   const lastMousePos = useRef({ x: 0, y: 0 });
   const dragStartPos = useRef({ x: 0, y: 0 });
 
+  // Handle external navigation requests (from MiniMap)
+  useEffect(() => {
+    if (navigateTo) {
+      setOffset(navigateTo.x, navigateTo.y);
+    }
+  }, [navigateTo, setOffset]);
+
   // Multi-level rendering state
-  const [mosaicOverview, setMosaicOverview] = useState<HTMLImageElement | null>(
-    null
-  );
+  const [mosaicOverview, setMosaicOverview] = useState<HTMLImageElement | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const chunkCacheRef = useRef<Map<string, ChunkCache>>(new Map());
   const loadingChunksRef = useRef<Set<string>>(new Set());
@@ -117,14 +124,8 @@ export function MosaicCanvas({
     // Calculate visible range
     const startX = Math.max(0, Math.floor(offsetX / TILE_SIZE));
     const startY = Math.max(0, Math.floor(offsetY / TILE_SIZE));
-    const endX = Math.min(
-      GRID_WIDTH - 1,
-      Math.floor((offsetX + canvasWidth / zoom) / TILE_SIZE)
-    );
-    const endY = Math.min(
-      GRID_HEIGHT - 1,
-      Math.floor((offsetY + canvasHeight / zoom) / TILE_SIZE)
-    );
+    const endX = Math.min(GRID_WIDTH - 1, Math.floor((offsetX + canvasWidth / zoom) / TILE_SIZE));
+    const endY = Math.min(GRID_HEIGHT - 1, Math.floor((offsetY + canvasHeight / zoom) / TILE_SIZE));
 
     const tiles: { x: number; y: number }[] = [];
     for (let x = startX; x <= endX; x++) {
@@ -239,7 +240,7 @@ export function MosaicCanvas({
       // Draw loaded tile images on top (sharp tiles replace blurry chunk preview)
       tileImages.forEach((img, key) => {
         const [tileX, tileY] = key.split(":").map(Number);
-        
+
         // Calculate exact pixel boundaries using rounding to avoid seams
         const x1 = Math.round((tileX * TILE_SIZE - offsetX) * zoom);
         const y1 = Math.round((tileY * TILE_SIZE - offsetY) * zoom);
@@ -262,24 +263,15 @@ export function MosaicCanvas({
         // Calculate visible tile range
         const startTileX = Math.max(0, Math.floor(offsetX / TILE_SIZE));
         const startTileY = Math.max(0, Math.floor(offsetY / TILE_SIZE));
-        const endTileX = Math.min(
-          GRID_WIDTH,
-          Math.ceil((offsetX + width / zoom) / TILE_SIZE)
-        );
-        const endTileY = Math.min(
-          GRID_HEIGHT,
-          Math.ceil((offsetY + height / zoom) / TILE_SIZE)
-        );
+        const endTileX = Math.min(GRID_WIDTH, Math.ceil((offsetX + width / zoom) / TILE_SIZE));
+        const endTileY = Math.min(GRID_HEIGHT, Math.ceil((offsetY + height / zoom) / TILE_SIZE));
 
         // Draw vertical lines
         ctx.beginPath();
         for (let i = startTileX; i <= endTileX; i++) {
           const screenX = (i * TILE_SIZE - offsetX) * zoom;
           ctx.moveTo(screenX + 0.5, Math.max(0, mosaicScreenY));
-          ctx.lineTo(
-            screenX + 0.5,
-            Math.min(height, mosaicScreenY + mosaicScreenH)
-          );
+          ctx.lineTo(screenX + 0.5, Math.min(height, mosaicScreenY + mosaicScreenH));
         }
         ctx.stroke();
 
@@ -288,10 +280,7 @@ export function MosaicCanvas({
         for (let i = startTileY; i <= endTileY; i++) {
           const screenY = (i * TILE_SIZE - offsetY) * zoom;
           ctx.moveTo(Math.max(0, mosaicScreenX), screenY + 0.5);
-          ctx.lineTo(
-            Math.min(width, mosaicScreenX + mosaicScreenW),
-            screenY + 0.5
-          );
+          ctx.lineTo(Math.min(width, mosaicScreenX + mosaicScreenW), screenY + 0.5);
         }
         ctx.stroke();
       }
@@ -335,9 +324,7 @@ export function MosaicCanvas({
       };
 
       img.onerror = () => {
-        console.error(
-          `Failed to load tile image (${tileUpdate.x}, ${tileUpdate.y})`
-        );
+        console.error(`Failed to load tile image (${tileUpdate.x}, ${tileUpdate.y})`);
         onTileUpdateProcessed?.();
       };
 
@@ -368,12 +355,13 @@ export function MosaicCanvas({
         const versionInfo = await getOverviewVersion();
         const img = await loadOverviewImage(versionInfo.version);
         setMosaicOverview(img);
+        onOverviewLoad?.(img);
       } catch (error) {
         console.error("Failed to reload overview:", error);
       }
     };
     reloadOverview();
-  }, [tileUpdate, onTileUpdateProcessed]);
+  }, [tileUpdate, onTileUpdateProcessed, onOverviewLoad]);
 
   // Track if canvas has been initialized
   const [isCanvasReady, setIsCanvasReady] = useState(false);
@@ -389,6 +377,7 @@ export function MosaicCanvas({
         const versionInfo = await getOverviewVersion();
         const img = await loadOverviewImage(versionInfo.version);
         setMosaicOverview(img);
+        onOverviewLoad?.(img);
       } catch (error) {
         console.error("Failed to load overview:", error);
       } finally {
@@ -397,7 +386,7 @@ export function MosaicCanvas({
     };
 
     loadOverview();
-  }, [overviewLoading, mosaicOverview]);
+  }, [overviewLoading, mosaicOverview, onOverviewLoad]);
 
   // Load missing chunks when at Level 1 or Level 2 (used as fallback preview)
   useEffect(() => {
@@ -448,16 +437,14 @@ export function MosaicCanvas({
       const nonExistent = nonExistentTilesRef.current;
 
       // Build set of visible tile keys for cancellation
-      const visibleKeys = new Set(
-        visibleTiles.map(({ x, y }) => getTileKey(x, y))
-      );
+      const visibleKeys = new Set(visibleTiles.map(({ x, y }) => getTileKey(x, y)));
 
       // Cancel requests for tiles no longer visible
       tileLoader.cancelNotIn(visibleKeys);
 
       // Sort tiles by distance from viewport center for priority loading
-      const centerX = offsetX + (canvasSize.width / zoom) / 2;
-      const centerY = offsetY + (canvasSize.height / zoom) / 2;
+      const centerX = offsetX + canvasSize.width / zoom / 2;
+      const centerY = offsetY + canvasSize.height / zoom / 2;
 
       const sortedTiles = [...visibleTiles].sort((a, b) => {
         const distA = Math.abs(a.x * TILE_SIZE - centerX) + Math.abs(a.y * TILE_SIZE - centerY);
@@ -500,7 +487,16 @@ export function MosaicCanvas({
     }, 50); // 50ms debounce
 
     return () => clearTimeout(timeoutId);
-  }, [renderLevel, getVisibleTiles, tileImages, offsetX, offsetY, zoom, canvasSize.width, canvasSize.height]);
+  }, [
+    renderLevel,
+    getVisibleTiles,
+    tileImages,
+    offsetX,
+    offsetY,
+    zoom,
+    canvasSize.width,
+    canvasSize.height,
+  ]);
 
   // Handle window resize and initial canvas setup
   useEffect(() => {
@@ -593,13 +589,9 @@ export function MosaicCanvas({
     return () => canvas.removeEventListener("wheel", handleWheel);
   }, [zoomAt, pan]);
 
-  // Debounce viewport change notifications
+  // Notify parent of viewport changes immediately (for minimap responsiveness)
   useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      onViewportChange?.(offsetX, offsetY, zoom);
-    }, 150);
-
-    return () => clearTimeout(timeoutId);
+    onViewportChange?.(offsetX, offsetY, zoom);
   }, [offsetX, offsetY, zoom, onViewportChange]);
 
   // Mouse down handler for drag start
@@ -628,12 +620,7 @@ export function MosaicCanvas({
     const worldY = canvasY / zoom + offsetY;
 
     // Check if click is within mosaic bounds
-    if (
-      worldX < 0 ||
-      worldX >= MOSAIC_WIDTH ||
-      worldY < 0 ||
-      worldY >= MOSAIC_HEIGHT
-    ) {
+    if (worldX < 0 || worldX >= MOSAIC_WIDTH || worldY < 0 || worldY >= MOSAIC_HEIGHT) {
       return; // Clicked outside mosaic
     }
 

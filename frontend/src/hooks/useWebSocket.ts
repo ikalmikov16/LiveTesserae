@@ -7,10 +7,7 @@ interface UseWebSocketOptions {
   reconnectDelay?: number;
 }
 
-export function useWebSocket({
-  onTileUpdate,
-  reconnectDelay = 2000,
-}: UseWebSocketOptions) {
+export function useWebSocket({ onTileUpdate, reconnectDelay = 2000 }: UseWebSocketOptions) {
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
@@ -19,25 +16,33 @@ export function useWebSocket({
   const hasConnectedRef = useRef(false);
   // Use ref to avoid stale closure issues with the callback
   const onTileUpdateRef = useRef(onTileUpdate);
-  onTileUpdateRef.current = onTileUpdate;
+
+  // Update ref in effect to avoid setting during render
+  useEffect(() => {
+    onTileUpdateRef.current = onTileUpdate;
+  }, [onTileUpdate]);
 
   // Subscribe to chunks
   const subscribe = useCallback((chunks: string[]) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: "subscribe",
-        chunks,
-      }));
+      wsRef.current.send(
+        JSON.stringify({
+          type: "subscribe",
+          chunks,
+        })
+      );
     }
   }, []);
 
   // Unsubscribe from chunks
   const unsubscribe = useCallback((chunks: string[]) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: "unsubscribe",
-        chunks,
-      }));
+      wsRef.current.send(
+        JSON.stringify({
+          type: "unsubscribe",
+          chunks,
+        })
+      );
     }
   }, []);
 

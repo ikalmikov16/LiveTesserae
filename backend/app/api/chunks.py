@@ -31,7 +31,7 @@ router = APIRouter(prefix="/chunks", tags=["chunks"])
 async def get_mosaic_overview():
     """
     Get full mosaic overview image (Level 0).
-    
+
     Re-renders if stale (any chunk updated since last render).
     """
     if await storage.is_overview_stale():
@@ -46,16 +46,16 @@ async def get_mosaic_overview():
             logger.info("Overview not found, rendering for first time")
             image_data = await chunk_renderer.render_mosaic_overview()
             await storage.save_mosaic_overview(image_data)
-    
+
     version = await storage.get_overview_version()
-    
+
     return Response(
         content=image_data,
         media_type="image/webp",
         headers={
             "Cache-Control": "no-cache, must-revalidate",
             "ETag": f'"overview_v{version}"',
-        }
+        },
     )
 
 
@@ -76,7 +76,7 @@ async def get_overview_version_endpoint():
 async def get_chunk(cx: int, cy: int):
     """
     Get chunk preview image (Level 1).
-    
+
     Always returns cached image - rendering happens on tile save.
     If chunk doesn't exist (no tiles drawn), renders an empty white chunk.
     """
@@ -84,17 +84,17 @@ async def get_chunk(cx: int, cy: int):
     max_chunk = settings.grid_width // settings.chunk_size - 1
     if not (0 <= cx <= max_chunk and 0 <= cy <= max_chunk):
         raise HTTPException(status_code=400, detail="Chunk coordinates out of bounds")
-    
+
     image_data = await storage.get_chunk_image(cx, cy)
-    
+
     if not image_data:
         # No tiles in this chunk yet - render an empty white chunk
         logger.debug(f"Chunk ({cx}, {cy}) not found, rendering empty chunk")
         image_data = await chunk_renderer.render_chunk(cx, cy)
         await storage.save_chunk_image(cx, cy, image_data)
-    
+
     version = await storage.get_chunk_version(cx, cy)
-    
+
     return Response(
         content=image_data,
         media_type="image/webp",
@@ -103,7 +103,7 @@ async def get_chunk(cx: int, cy: int):
             # This ensures browsers re-validate when version changes
             "Cache-Control": "no-cache, must-revalidate",
             "ETag": f'"{cx}_{cy}_v{version}"',
-        }
+        },
     )
 
 
@@ -114,6 +114,6 @@ async def get_chunk_version_endpoint(cx: int, cy: int):
     max_chunk = settings.grid_width // settings.chunk_size - 1
     if not (0 <= cx <= max_chunk and 0 <= cy <= max_chunk):
         raise HTTPException(status_code=400, detail="Chunk coordinates out of bounds")
-    
+
     version = await storage.get_chunk_version(cx, cy)
     return {"cx": cx, "cy": cy, "version": version}

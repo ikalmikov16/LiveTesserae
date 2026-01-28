@@ -1,0 +1,120 @@
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+}
+
+.toolbar__tools {
+  display: flex;
+  gap: 2px;
+}
+
+.toolbar__actions {
+  display: flex;
+  gap: 2px;
+}
+
+.toolbar__divider {
+  width: 1px;
+  height: 20px;
+  background: var(--color-border);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
+/* Base button style */
+.toolbar__btn {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.toolbar__btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--color-text-primary);
+}
+
+/* Selected state for toggle buttons - use aria-checked since Tooltip overrides data-state */
+.toolbar__tool-btn[aria-checked="true"] {
+  background: var(--color-accent);
+  border-color: var(--color-accent-hover);
+  color: white;
+  box-shadow:
+    0 0 0 2px rgba(74, 158, 255, 0.3),
+    0 2px 8px rgba(74, 158, 255, 0.4);
+}
+
+.toolbar__tool-btn[aria-checked="true"]:hover {
+  background: var(--color-accent-hover);
+}
+
+/* Active state for action buttons (grid toggle) */
+.toolbar__btn--active {
+  background: var(--color-accent);
+  border-color: var(--color-accent-hover);
+  color: white;
+  box-shadow:
+    0 0 0 2px rgba(74, 158, 255, 0.3),
+    0 2px 8px rgba(74, 158, 255, 0.4);
+}
+
+.toolbar__btn--active:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+/* Disabled state */
+.toolbar__btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Danger button (clear/trash) */
+.toolbar__btn--danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.2);
+  color: var(--color-error);
+  border-color: rgba(248, 113, 113, 0.3);
+}
+
+/* Tooltip styles */
+.tooltip {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--color-border);
+  z-index: 1000;
+  animation: tooltipFadeIn 0.15s ease;
+}
+
+.tooltip__arrow {
+  fill: var(--color-bg-primary);
+}
+
+@keyframes tooltipFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

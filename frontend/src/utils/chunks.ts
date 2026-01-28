@@ -18,7 +18,7 @@ export function getChunkId(tileX: number, tileY: number): string {
 
 /**
  * Calculate which chunks are visible in the current viewport.
- * 
+ *
  * @param viewportX - Pixel offset from left edge (0 = no pan)
  * @param viewportY - Pixel offset from top edge (0 = no pan)
  * @param viewportWidth - Viewport width in pixels
@@ -34,14 +34,8 @@ export function getVisibleChunks(
   // Calculate tile range visible in viewport
   const startTileX = Math.max(0, Math.floor(viewportX / TILE_SIZE));
   const startTileY = Math.max(0, Math.floor(viewportY / TILE_SIZE));
-  const endTileX = Math.min(
-    GRID_WIDTH - 1,
-    Math.ceil((viewportX + viewportWidth) / TILE_SIZE)
-  );
-  const endTileY = Math.min(
-    GRID_HEIGHT - 1,
-    Math.ceil((viewportY + viewportHeight) / TILE_SIZE)
-  );
+  const endTileX = Math.min(GRID_WIDTH - 1, Math.ceil((viewportX + viewportWidth) / TILE_SIZE));
+  const endTileY = Math.min(GRID_HEIGHT - 1, Math.ceil((viewportY + viewportHeight) / TILE_SIZE));
 
   // Convert to chunk range (clamped to valid range)
   const startChunkX = Math.max(0, Math.floor(startTileX / CHUNK_SIZE));
@@ -56,14 +50,14 @@ export function getVisibleChunks(
       chunks.push(`${cx}:${cy}`);
     }
   }
-  
+
   return chunks;
 }
 
 /**
  * Calculate which chunks need to be subscribed/unsubscribed
  * when viewport changes.
- * 
+ *
  * @param currentChunks - Currently subscribed chunks
  * @param newChunks - Chunks that should be subscribed
  * @returns Object with chunks to subscribe and unsubscribe

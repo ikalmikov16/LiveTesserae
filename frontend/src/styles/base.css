@@ -54,7 +54,9 @@ button {
   color: var(--color-text-primary);
   font-size: 14px;
   font-weight: 500;
-  transition: background var(--transition-fast), transform var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .btn:hover {

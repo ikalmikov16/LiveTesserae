@@ -17,7 +17,7 @@ export function TileEditorModal({ tile, onClose, onSave }: TileEditorModalProps)
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
   // Store canvas helpers from PixelCanvas
   const canvasHelpersRef = useRef<{
     clear: () => void;
@@ -48,7 +48,7 @@ export function TileEditorModal({ tile, onClose, onSave }: TileEditorModalProps)
 
       try {
         const blob = await getTileImage(tile.x, tile.y);
-        
+
         if (cancelled) return;
 
         if (blob && canvasHelpersRef.current) {
@@ -158,29 +158,25 @@ export function TileEditorModal({ tile, onClose, onSave }: TileEditorModalProps)
             </div>
           )}
           <PixelCanvas color={color} onCanvasReady={handleCanvasReady} />
-          
+
           <div className="editor-controls">
             <ColorPicker color={color} onChange={setColor} />
           </div>
 
-          {error && (
-            <div className="error-message">
-              {error}
-            </div>
-          )}
+          {error && <div className="error-message">{error}</div>}
         </div>
 
         <div className="modal-footer">
           <div className="modal-footer-left">
-            <button 
-              className="btn btn-secondary" 
+            <button
+              className="btn btn-secondary"
               onClick={handleClear}
               disabled={isSaving || isLoading}
             >
               Clear
             </button>
-            <button 
-              className="btn btn-secondary" 
+            <button
+              className="btn btn-secondary"
               onClick={handleFill}
               disabled={isSaving || isLoading}
               title="Fill entire tile with selected color"
@@ -189,11 +185,7 @@ export function TileEditorModal({ tile, onClose, onSave }: TileEditorModalProps)
             </button>
           </div>
           <div className="modal-footer-right">
-            <button 
-              className="btn btn-secondary" 
-              onClick={onClose}
-              disabled={isSaving}
-            >
+            <button className="btn btn-secondary" onClick={onClose} disabled={isSaving}>
               Cancel
             </button>
             <button

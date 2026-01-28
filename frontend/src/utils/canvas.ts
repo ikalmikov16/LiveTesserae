@@ -27,11 +27,7 @@ export function toPngDataUrl(canvas: HTMLCanvasElement): string {
 /**
  * Clear a canvas by filling it with white.
  */
-export function clearCanvas(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number
-): void {
+export function clearCanvas(ctx: CanvasRenderingContext2D, width: number, height: number): void {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, width, height);
 }

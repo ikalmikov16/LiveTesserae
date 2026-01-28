@@ -13,16 +13,10 @@ export interface ViewportState {
   zoom: number;
 }
 
-function calculateFitToScreenViewport(
-  canvasWidth: number,
-  canvasHeight: number
-): ViewportState {
+function calculateFitToScreenViewport(canvasWidth: number, canvasHeight: number): ViewportState {
   const availableWidth = canvasWidth - PADDING * 2;
   const availableHeight = canvasHeight - PADDING * 2;
-  const fitZoom = Math.min(
-    availableWidth / MOSAIC_WIDTH,
-    availableHeight / MOSAIC_HEIGHT
-  );
+  const fitZoom = Math.min(availableWidth / MOSAIC_WIDTH, availableHeight / MOSAIC_HEIGHT);
   const scaledWidth = MOSAIC_WIDTH * fitZoom;
   const scaledHeight = MOSAIC_HEIGHT * fitZoom;
   return {
@@ -42,10 +36,7 @@ export function useViewport(canvasWidth: number, canvasHeight: number) {
   const minZoom = useMemo(() => {
     const availableWidth = canvasWidth - PADDING * 2;
     const availableHeight = canvasHeight - PADDING * 2;
-    return Math.min(
-      availableWidth / MOSAIC_WIDTH,
-      availableHeight / MOSAIC_HEIGHT
-    );
+    return Math.min(availableWidth / MOSAIC_WIDTH, availableHeight / MOSAIC_HEIGHT);
   }, [canvasWidth, canvasHeight]);
 
   // Clamp offset to keep mosaic partially visible
@@ -124,10 +115,21 @@ export function useViewport(canvasWidth: number, canvasHeight: number) {
     [minZoom, canvasWidth, canvasHeight, clampOffset]
   );
 
+  // Set offset directly (for minimap navigation)
+  const setOffset = useCallback(
+    (newOffsetX: number, newOffsetY: number) => {
+      setViewport((v) => {
+        const clamped = clampOffset(newOffsetX, newOffsetY, v.zoom);
+        return { ...v, ...clamped };
+      });
+    },
+    [clampOffset]
+  );
+
   // Reset to fit-to-screen view
   const resetView = useCallback(() => {
     setViewport(calculateFitToScreenViewport(canvasWidth, canvasHeight));
   }, [canvasWidth, canvasHeight]);
 
-  return { viewport, pan, zoomAt, setZoom, resetView, minZoom, maxZoom: MAX_ZOOM };
+  return { viewport, pan, zoomAt, setZoom, setOffset, resetView, minZoom, maxZoom: MAX_ZOOM };
 }

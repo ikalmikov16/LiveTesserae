@@ -31,7 +31,11 @@ export async function saveTile(
  * Returns null if tile is default (404).
  */
 export async function getTileImage(x: number, y: number): Promise<Blob | null> {
-  const response = await fetch(`${API_BASE_URL}/api/tiles/${x}/${y}`);
+  // Use cache: 'no-store' to always get fresh data
+  // This is important because other users may have updated the tile
+  const response = await fetch(`${API_BASE_URL}/api/tiles/${x}/${y}`, {
+    cache: "no-store",
+  });
 
   if (response.status === 404) {
     // Tile doesn't exist (is default)
@@ -68,6 +72,7 @@ export async function getTileImageUrl(x: number, y: number): Promise<string | nu
 export async function tileExists(x: number, y: number): Promise<boolean> {
   const response = await fetch(`${API_BASE_URL}/api/tiles/${x}/${y}`, {
     method: "HEAD",
+    cache: "no-store",
   });
 
   return response.ok;

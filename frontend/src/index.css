@@ -1,6 +1,9 @@
 :root {
   /* Typography */
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
 
   /* Colors - Dark Theme */
   --color-bg-primary: #1a1a1a;
@@ -48,4 +51,13 @@
 body {
   margin: 0;
   background-color: var(--color-bg-primary);
+}
+
+/* Reusable glass panel style */
+.glass-panel {
+  background: var(--color-bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
 }

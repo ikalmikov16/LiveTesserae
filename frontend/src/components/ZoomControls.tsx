@@ -13,13 +13,7 @@ interface ZoomControlsProps {
 // Step size for zoom buttons (5% on the logarithmic scale)
 const ZOOM_STEP = 5;
 
-export function ZoomControls({
-  zoom,
-  minZoom,
-  maxZoom,
-  onZoomChange,
-  onReset,
-}: ZoomControlsProps) {
+export function ZoomControls({ zoom, minZoom, maxZoom, onZoomChange, onReset }: ZoomControlsProps) {
   // Use logarithmic scale for percentage so equal % changes = equal visual changes
   // This maps the exponential zoom range to a linear 0-100 scale
   const logMin = Math.log(minZoom);
@@ -50,11 +44,7 @@ export function ZoomControls({
 
   return (
     <div className="zoom-controls glass-panel">
-      <button
-        className="zoom-controls__btn"
-        onClick={handleZoomIn}
-        title="Zoom in"
-      >
+      <button className="zoom-controls__btn" onClick={handleZoomIn} title="Zoom in">
         <ZoomIn size={18} />
       </button>
 
@@ -73,11 +63,7 @@ export function ZoomControls({
         <Slider.Thumb className="zoom-controls__thumb" aria-label="Zoom level" />
       </Slider.Root>
 
-      <button
-        className="zoom-controls__btn"
-        onClick={handleZoomOut}
-        title="Zoom out"
-      >
+      <button className="zoom-controls__btn" onClick={handleZoomOut} title="Zoom out">
         <ZoomOut size={18} />
       </button>
 

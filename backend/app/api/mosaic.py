@@ -10,12 +10,12 @@ router = APIRouter()
 async def mosaic_info():
     """
     Get mosaic configuration and statistics.
-    
+
     Returns grid dimensions, tile size, chunk configuration, and tile count.
     """
     # Get count of edited tiles
     tile_count = await db.fetchval("SELECT COUNT(*) FROM tiles") or 0
-    
+
     return {
         "grid_width": settings.grid_width,
         "grid_height": settings.grid_height,

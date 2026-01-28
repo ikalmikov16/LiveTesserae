@@ -12,6 +12,7 @@
   gap: var(--space-sm);
   padding: var(--space-sm);
   z-index: 100;
+  /* glass-panel class provides the glassmorphism background */
 }
 
 /* Buttons */
@@ -26,7 +27,9 @@
   background: transparent;
   color: var(--color-text-primary);
   cursor: pointer;
-  transition: background var(--transition-fast), transform var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .zoom-controls__btn:hover {
@@ -92,7 +95,9 @@
   border-radius: var(--radius-full);
   box-shadow: var(--shadow-sm);
   cursor: grab;
-  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .zoom-controls__thumb:hover {
