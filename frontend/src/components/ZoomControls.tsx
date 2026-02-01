@@ -1,5 +1,5 @@
 import * as Slider from "@radix-ui/react-slider";
-import { ZoomIn, ZoomOut, Maximize } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize, Grid3X3 } from "lucide-react";
 import "./ZoomControls.css";
 
 interface ZoomControlsProps {
@@ -8,12 +8,22 @@ interface ZoomControlsProps {
   maxZoom: number;
   onZoomChange: (zoom: number) => void;
   onReset: () => void;
+  showGrid?: boolean;
+  onToggleGrid?: () => void;
 }
 
 // Step size for zoom buttons (5% on the logarithmic scale)
 const ZOOM_STEP = 5;
 
-export function ZoomControls({ zoom, minZoom, maxZoom, onZoomChange, onReset }: ZoomControlsProps) {
+export function ZoomControls({
+  zoom,
+  minZoom,
+  maxZoom,
+  onZoomChange,
+  onReset,
+  showGrid,
+  onToggleGrid,
+}: ZoomControlsProps) {
   // Use logarithmic scale for percentage so equal % changes = equal visual changes
   // This maps the exponential zoom range to a linear 0-100 scale
   const logMin = Math.log(minZoom);
@@ -76,6 +86,16 @@ export function ZoomControls({ zoom, minZoom, maxZoom, onZoomChange, onReset }: 
       >
         <Maximize size={16} />
       </button>
+
+      {onToggleGrid && (
+        <button
+          className={`zoom-controls__btn zoom-controls__btn--grid ${showGrid ? "zoom-controls__btn--active" : ""}`}
+          onClick={onToggleGrid}
+          title={`${showGrid ? "Hide" : "Show"} grid (G)`}
+        >
+          <Grid3X3 size={16} />
+        </button>
+      )}
     </div>
   );
 }

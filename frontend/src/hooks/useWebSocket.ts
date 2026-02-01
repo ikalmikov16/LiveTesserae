@@ -113,7 +113,13 @@ export function useWebSocket({ onTileUpdate, reconnectDelay = 2000 }: UseWebSock
           const message: WebSocketServerMessage = JSON.parse(event.data);
 
           if (message.type === "tile_update") {
+            // Single update
             onTileUpdateRef.current(message);
+          } else if (message.type === "tile_updates_batch") {
+            // Batched updates - process all of them
+            for (const update of message.updates) {
+              onTileUpdateRef.current(update);
+            }
           }
         } catch (error) {
           console.error("Failed to parse WebSocket message:", error);

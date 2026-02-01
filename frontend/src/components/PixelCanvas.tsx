@@ -16,6 +16,8 @@ interface PixelCanvasProps {
     fill: (color: string) => void;
     getCanvas: () => HTMLCanvasElement;
     loadFromImage: (img: HTMLImageElement) => void;
+    loadFromRgbBytes: (rgb: Uint8Array) => void;
+    toRgbBytes: () => Uint8Array;
     setShowGrid: (show: boolean) => void;
     undo: () => boolean;
     redo: () => boolean;
@@ -41,6 +43,8 @@ export function PixelCanvas({
     floodFill,
     getCanvas,
     loadFromImage,
+    loadFromRgbBytes,
+    toRgbBytes,
     beginDrawing,
     undo,
     redo,
@@ -137,6 +141,11 @@ export function PixelCanvas({
         loadFromImage(img);
         renderDisplay();
       },
+      loadFromRgbBytes: (rgb: Uint8Array) => {
+        loadFromRgbBytes(rgb);
+        renderDisplay();
+      },
+      toRgbBytes,
       setShowGrid: (show: boolean) => {
         setShowGrid(show);
       },
@@ -150,6 +159,8 @@ export function PixelCanvas({
     fill,
     getCanvas,
     loadFromImage,
+    loadFromRgbBytes,
+    toRgbBytes,
     onCanvasReady,
     renderDisplay,
     handleUndo,

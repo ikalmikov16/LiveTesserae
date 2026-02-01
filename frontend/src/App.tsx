@@ -6,12 +6,23 @@ import { MiniMap } from "./components/MiniMap";
 import { saveTile } from "./api/tiles";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { getVisibleChunks, diffChunkSubscriptions } from "./utils/chunks";
-import type { TileCoordinates, TileUpdateMessage, TileWithImage } from "./types";
+import { base64ToUint8Array } from "./utils/pixels";
+import { MOSAIC_CONFIG } from "./config";
+import type { TileCoordinates, TileUpdateMessage, TileWithPixels } from "./types";
+
+const { TILE_SIZE } = MOSAIC_CONFIG;
+
+interface TilePreview {
+  x: number;
+  y: number;
+  pixelData: Uint8Array;
+}
 
 function App() {
   const [selectedTile, setSelectedTile] = useState<TileCoordinates | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
-  const [tileUpdate, setTileUpdate] = useState<TileWithImage | null>(null);
+  const [tileUpdate, setTileUpdate] = useState<TileWithPixels | null>(null);
+  const [tilePreview, setTilePreview] = useState<TilePreview | null>(null);
 
   // Shared state for MiniMap
   const [overviewImage, setOverviewImage] = useState<HTMLImageElement | null>(null);
@@ -27,10 +38,12 @@ function App() {
   const handleWebSocketTileUpdate = useCallback((message: TileUpdateMessage) => {
     console.log(`WebSocket: Tile update received (${message.x}, ${message.y})`);
 
+    const pixelData = base64ToUint8Array(message.pixels);
+
     setTileUpdate({
       x: message.x,
       y: message.y,
-      imageData: message.image,
+      pixelData,
     });
   }, []);
 
@@ -98,6 +111,38 @@ function App() {
     setTimeout(() => setNavigateTo(null), 0);
   }, []);
 
+  // Handle Go to X,Y from MiniMap - navigate and open editor
+  const handleGoToTile = useCallback((x: number, y: number) => {
+    setSelectedTile({ x, y });
+    setEditorOpen(true);
+  }, []);
+
+  // Handle Pan to Tile button in editor
+  const handlePanToTile = useCallback(() => {
+    if (!selectedTile) return;
+    // Navigate to center the tile on screen
+    const worldX = (selectedTile.x + 0.5) * TILE_SIZE - canvasSize.width / viewportState.zoom / 2;
+    const worldY = (selectedTile.y + 0.5) * TILE_SIZE - canvasSize.height / viewportState.zoom / 2;
+    setNavigateTo({ x: worldX, y: worldY });
+    setTimeout(() => setNavigateTo(null), 0);
+  }, [selectedTile, canvasSize.width, canvasSize.height, viewportState.zoom]);
+
+  // Handle preview change from editor
+  const handlePreviewChange = useCallback(
+    (pixelData: Uint8Array | null) => {
+      if (!selectedTile || !pixelData) {
+        setTilePreview(null);
+        return;
+      }
+      setTilePreview({
+        x: selectedTile.x,
+        y: selectedTile.y,
+        pixelData,
+      });
+    },
+    [selectedTile]
+  );
+
   const handleTileClick = (coords: TileCoordinates) => {
     setSelectedTile(coords);
     setEditorOpen(true);
@@ -105,13 +150,17 @@ function App() {
 
   const handleCloseEditor = () => {
     setEditorOpen(false);
+    setTilePreview(null);
   };
 
-  const handleSaveTile = useCallback(async (tileX: number, tileY: number, pngBlob: Blob) => {
-    await saveTile(tileX, tileY, pngBlob);
-    // Note: The tile will appear via WebSocket broadcast
-    // Don't close editor here - let the caller decide
-  }, []);
+  const handleSaveTile = useCallback(
+    async (tileX: number, tileY: number, pixelData: Uint8Array) => {
+      await saveTile(tileX, tileY, pixelData);
+      // Note: The tile will appear via WebSocket broadcast
+      // Don't close editor here - let the caller decide
+    },
+    []
+  );
 
   // Clear tileUpdate after MosaicCanvas processes it
   const handleTileUpdateProcessed = useCallback(() => {
@@ -127,6 +176,8 @@ function App() {
         onViewportChange={handleViewportChange}
         onOverviewLoad={handleOverviewLoad}
         navigateTo={navigateTo}
+        tilePreview={tilePreview}
+        selectedTile={editorOpen ? selectedTile : null}
       />
       <MiniMap
         overviewImage={overviewImage}
@@ -136,12 +187,16 @@ function App() {
         canvasWidth={canvasSize.width}
         canvasHeight={canvasSize.height}
         onNavigate={handleMiniMapNavigate}
+        editingTile={editorOpen ? selectedTile : null}
+        onGoToTile={handleGoToTile}
       />
       <TileEditorPanel
         isOpen={editorOpen}
         tile={selectedTile}
         onClose={handleCloseEditor}
         onSave={handleSaveTile}
+        onPanToTile={handlePanToTile}
+        onPreviewChange={handlePreviewChange}
       />
       {/* Connection status indicator */}
       <div

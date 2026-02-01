@@ -7,6 +7,7 @@ boto3>=1.34.0
 python-multipart>=0.0.6
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
+numpy>=1.26.0
 
 # Development
 black>=24.0.0

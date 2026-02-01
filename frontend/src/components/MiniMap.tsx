@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
-import { Map, ChevronDown } from "lucide-react";
+import { Map, ChevronDown, Search } from "lucide-react";
 import { MOSAIC_CONFIG } from "../config";
+import type { TileCoordinates } from "../types";
 import "./MiniMap.css";
 
 const { GRID_WIDTH, TILE_SIZE } = MOSAIC_CONFIG;
@@ -15,6 +16,8 @@ interface MiniMapProps {
   canvasWidth: number;
   canvasHeight: number;
   onNavigate: (x: number, y: number) => void;
+  editingTile?: TileCoordinates | null;
+  onGoToTile?: (x: number, y: number) => void;
 }
 
 export function MiniMap({
@@ -25,10 +28,14 @@ export function MiniMap({
   canvasWidth,
   canvasHeight,
   onNavigate,
+  editingTile,
+  onGoToTile,
 }: MiniMapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [gotoX, setGotoX] = useState("");
+  const [gotoY, setGotoY] = useState("");
 
   // Cached overview canvas (only redrawn when image changes)
   const cachedOverviewRef = useRef<HTMLCanvasElement | null>(null);
@@ -53,6 +60,18 @@ export function MiniMap({
   }, [canvasWidth, canvasHeight, viewportZoom, viewportX, viewportY, scale]);
 
   const { rectX, rectY, rectW, rectH } = viewport;
+
+  // Calculate editing tile position on minimap
+  const editingTilePos = useMemo(() => {
+    if (!editingTile) return null;
+    // Center of the tile in world coordinates, then scaled to minimap
+    const worldX = (editingTile.x + 0.5) * TILE_SIZE;
+    const worldY = (editingTile.y + 0.5) * TILE_SIZE;
+    return {
+      x: worldX * scale,
+      y: worldY * scale,
+    };
+  }, [editingTile, scale]);
 
   // Cache and draw minimap in a single effect
   // This avoids the need for state to track "readiness"
@@ -82,12 +101,15 @@ export function MiniMap({
       cachedImageSrcRef.current = null;
     }
 
-    // Draw if we have a cached overview
-    const cachedOverview = cachedOverviewRef.current;
-    if (!cachedOverview) return;
+    // Clear canvas first
+    ctx.fillStyle = "#1a1a1a";
+    ctx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
 
-    // Draw cached overview (fast blit)
-    ctx.drawImage(cachedOverview, 0, 0);
+    // Draw cached overview if available
+    const cachedOverview = cachedOverviewRef.current;
+    if (cachedOverview) {
+      ctx.drawImage(cachedOverview, 0, 0);
+    }
 
     // Draw viewport rectangle with semi-transparent fill
     ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
@@ -103,7 +125,34 @@ export function MiniMap({
     ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
     ctx.lineWidth = 1;
     ctx.strokeRect(rectX, rectY, rectW, rectH);
-  }, [overviewImage, rectX, rectY, rectW, rectH, collapsed]);
+
+    // Draw crosshairs for editing tile (LAST so they're on top of everything)
+    if (editingTilePos) {
+      ctx.strokeStyle = "#ff3366";
+      ctx.lineWidth = 1;
+
+      // Vertical line
+      ctx.beginPath();
+      ctx.moveTo(editingTilePos.x, 0);
+      ctx.lineTo(editingTilePos.x, MINIMAP_SIZE);
+      ctx.stroke();
+
+      // Horizontal line
+      ctx.beginPath();
+      ctx.moveTo(0, editingTilePos.y);
+      ctx.lineTo(MINIMAP_SIZE, editingTilePos.y);
+      ctx.stroke();
+
+      // Draw small marker at tile position
+      ctx.fillStyle = "#ff3366";
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(editingTilePos.x, editingTilePos.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }, [overviewImage, rectX, rectY, rectW, rectH, collapsed, editingTilePos]);
 
   // Convert minimap coordinates to world coordinates and navigate
   const navigateToPoint = useCallback(
@@ -176,6 +225,33 @@ export function MiniMap({
     return () => window.removeEventListener("mouseup", handleGlobalMouseUp);
   }, [isDragging]);
 
+  // Handle Go to X,Y submission
+  const handleGoTo = useCallback(
+    (e?: React.FormEvent) => {
+      e?.preventDefault();
+      const x = parseInt(gotoX, 10);
+      const y = parseInt(gotoY, 10);
+
+      // Validate coordinates
+      if (isNaN(x) || isNaN(y) || x < 0 || x >= GRID_WIDTH || y < 0 || y >= GRID_WIDTH) {
+        return;
+      }
+
+      // Navigate to center the tile on screen
+      const worldX = (x + 0.5) * TILE_SIZE - viewport.width / 2;
+      const worldY = (y + 0.5) * TILE_SIZE - viewport.height / 2;
+      onNavigate(worldX, worldY);
+
+      // Also trigger tile selection if callback provided
+      onGoToTile?.(x, y);
+
+      // Clear inputs
+      setGotoX("");
+      setGotoY("");
+    },
+    [gotoX, gotoY, viewport.width, viewport.height, onNavigate, onGoToTile]
+  );
+
   if (collapsed) {
     return (
       <button
@@ -208,6 +284,42 @@ export function MiniMap({
         onMouseLeave={handleMouseUp}
         style={{ cursor: isDragging ? "grabbing" : "crosshair" }}
       />
+      <form className="minimap__goto" onSubmit={handleGoTo}>
+        <input
+          type="text"
+          className="minimap__goto-input"
+          placeholder="X"
+          value={gotoX}
+          onChange={(e) => {
+            const val = e.target.value.replace(/\D/g, "");
+            // Limit to 999
+            const num = parseInt(val, 10);
+            if (val === "" || (num >= 0 && num <= 999)) {
+              setGotoX(val);
+            }
+          }}
+          maxLength={3}
+        />
+        <span className="minimap__goto-sep">,</span>
+        <input
+          type="text"
+          className="minimap__goto-input"
+          placeholder="Y"
+          value={gotoY}
+          onChange={(e) => {
+            const val = e.target.value.replace(/\D/g, "");
+            // Limit to 999
+            const num = parseInt(val, 10);
+            if (val === "" || (num >= 0 && num <= 999)) {
+              setGotoY(val);
+            }
+          }}
+          maxLength={3}
+        />
+        <button type="submit" className="minimap__goto-btn" title="Go to tile">
+          <Search size={14} />
+        </button>
+      </form>
     </div>
   );
 }

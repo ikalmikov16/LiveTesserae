@@ -8,6 +8,7 @@
   right: var(--space-lg);
   z-index: 100;
   padding: var(--space-sm);
+  width: calc(150px + var(--space-sm) * 2); /* Match canvas width + padding */
   /* glass-panel class provides the glassmorphism background */
 }
 
@@ -74,4 +75,64 @@
   display: block;
   border-radius: var(--radius-sm);
   background: var(--color-bg-tertiary);
+}
+
+/* Go to X,Y input */
+.minimap__goto {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: var(--space-sm);
+}
+
+.minimap__goto-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 12px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  text-align: center;
+  transition: border-color var(--transition-fast);
+}
+
+.minimap__goto-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.minimap__goto-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.minimap__goto-sep {
+  color: var(--color-text-primary);
+  font-size: 12px;
+}
+
+.minimap__goto-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: var(--color-accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: white;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.minimap__goto-btn:hover {
+  background: var(--color-accent-hover);
+}
+
+.minimap__goto-btn:active {
+  transform: scale(0.95);
 }

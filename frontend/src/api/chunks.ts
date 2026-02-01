@@ -32,7 +32,9 @@ export function getChunkImageUrl(cx: number, cy: number, version?: number): stri
  * Get the current version of a chunk.
  */
 export async function getChunkVersion(cx: number, cy: number): Promise<ChunkVersion> {
-  const response = await fetch(`${API_BASE_URL}/api/chunks/${cx}/${cy}/version`);
+  const response = await fetch(`${API_BASE_URL}/api/chunks/${cx}/${cy}/version`, {
+    cache: "no-store", // Always get fresh version to avoid stale cache busting
+  });
   if (!response.ok) throw new Error("Failed to get chunk version");
   return response.json();
 }
@@ -49,7 +51,9 @@ export function getMosaicOverviewUrl(version?: number): string {
  * Get the current version and stale status of the overview.
  */
 export async function getOverviewVersion(): Promise<OverviewVersion> {
-  const response = await fetch(`${API_BASE_URL}/api/chunks/overview/version`);
+  const response = await fetch(`${API_BASE_URL}/api/chunks/overview/version`, {
+    cache: "no-store", // Always get fresh version to avoid stale cache busting
+  });
   if (!response.ok) throw new Error("Failed to get overview version");
   return response.json();
 }

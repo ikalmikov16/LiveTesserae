@@ -1,9 +1,7 @@
 import base64
-import io
 import logging
 
 from fastapi import APIRouter, HTTPException, Path, Request, Response
-from PIL import Image
 
 from app.config import settings
 from app.models.tile import TileDeleteResponse, TileResponse, TileSaveResponse
@@ -14,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# PNG magic bytes
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+# RGB pixel data size: 32×32 pixels × 3 bytes (RGB) = 3072 bytes
+RGB_DATA_SIZE = 32 * 32 * 3
 
 
 def validate_coordinates(x: int, y: int) -> None:
@@ -32,48 +30,17 @@ def validate_coordinates(x: int, y: int) -> None:
         )
 
 
-def validate_png_image(data: bytes) -> None:
+def validate_pixel_data(data: bytes) -> None:
     """
-    Validate that data is a valid PNG image with correct dimensions.
+    Validate that data is valid RGB pixel data.
 
-    Raises HTTPException if invalid.
+    Expected: 3072 bytes (32×32×3 RGB, row-major order)
     """
-    # Check minimum size
-    if len(data) < 8:
-        raise HTTPException(status_code=400, detail="Image data too small")
-
-    # Check PNG magic bytes
-    if not data.startswith(PNG_MAGIC):
+    if len(data) != RGB_DATA_SIZE:
         raise HTTPException(
             status_code=400,
-            detail="Invalid image format. Must be PNG.",
-        )
-
-    # Check file size (reasonable limit for 32x32 PNG)
-    max_size = 50 * 1024  # 50KB should be more than enough
-    if len(data) > max_size:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Image too large. Maximum size is {max_size // 1024}KB.",
-        )
-
-    # Validate dimensions using Pillow
-    try:
-        img = Image.open(io.BytesIO(data))
-        width, height = img.size
-
-        if width != settings.tile_size or height != settings.tile_size:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Image must be exactly {settings.tile_size}x{settings.tile_size} pixels. "
-                f"Got {width}x{height}.",
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid PNG image: {str(e)}",
+            detail=f"Pixel data must be exactly {RGB_DATA_SIZE} bytes (32×32×3 RGB). "
+            f"Got {len(data)} bytes.",
         )
 
 
@@ -81,7 +48,10 @@ def validate_png_image(data: bytes) -> None:
     "/tiles/{x}/{y}",
     response_class=Response,
     responses={
-        200: {"content": {"image/png": {}}, "description": "Tile image"},
+        200: {
+            "content": {"application/octet-stream": {}},
+            "description": "RGB pixel data (3072 bytes)",
+        },
         404: {"description": "Tile not found (is default)"},
     },
 )
@@ -90,23 +60,22 @@ async def get_tile(
     y: int = Path(ge=0, lt=settings.grid_height, description="Y coordinate"),
 ):
     """
-    Get a tile image.
+    Get tile as raw RGB bytes.
 
-    Returns the PNG image data, or 404 if the tile is in default state.
+    Returns 3072 bytes of RGB data (32×32×3, row-major order).
+    Returns 404 if tile is in default (white) state.
     """
     validate_coordinates(x, y)
 
-    image_data = await tile_service.get_tile_image(x, y)
+    pixel_data = await tile_service.get_tile_pixel_data(x, y)
 
-    if image_data is None:
+    if pixel_data is None:
         raise HTTPException(status_code=404, detail="Tile not found (is default)")
 
     return Response(
-        content=image_data,
-        media_type="image/png",
-        headers={
-            "Cache-Control": "public, max-age=31536000",  # 1 year (versioned URLs)
-        },
+        content=pixel_data,
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "public, max-age=31536000"},
     )
 
 
@@ -139,24 +108,20 @@ async def save_tile(
     """
     Save or update a tile.
 
-    Accepts PNG image data in the request body.
-    Image must be exactly 32x32 pixels.
+    Accepts raw RGB bytes (3072 bytes = 32×32×3, row-major order).
     """
     validate_coordinates(x, y)
 
-    # Read request body
-    image_data = await request.body()
+    pixel_data = await request.body()
 
-    if not image_data:
-        raise HTTPException(status_code=400, detail="No image data provided")
+    if not pixel_data:
+        raise HTTPException(status_code=400, detail="No pixel data provided")
 
-    # Validate PNG
-    validate_png_image(image_data)
+    validate_pixel_data(pixel_data)
 
-    # Save tile
-    result = await tile_service.save_tile(x, y, image_data)
+    result = await tile_service.save_tile(x, y, pixel_data)
 
-    # Broadcast update only to clients subscribed to this chunk
+    # Broadcast update to WebSocket subscribers
     chunk_id = tile_service.calculate_chunk_id(x, y)
     await manager.broadcast_to_chunk(
         chunk_id,
@@ -164,7 +129,7 @@ async def save_tile(
             "type": "tile_update",
             "x": x,
             "y": y,
-            "image": f"data:image/png;base64,{base64.b64encode(image_data).decode()}",
+            "pixels": base64.b64encode(pixel_data).decode("ascii"),
         },
     )
 
@@ -183,7 +148,7 @@ async def delete_tile(
     """
     Delete a tile (reset to default state).
 
-    Removes the tile image and database record.
+    Removes the tile from the database.
     """
     validate_coordinates(x, y)
 

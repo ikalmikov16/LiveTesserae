@@ -1,24 +1,32 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { flushSync, createPortal } from "react-dom";
-import { X, Check } from "lucide-react";
+import { Check, Crosshair } from "lucide-react";
 import type { TileCoordinates } from "../types";
 import { PixelCanvas } from "./PixelCanvas";
 import { ColorPicker } from "./ColorPicker";
 import { Toolbar, type Tool } from "./Toolbar";
-import { toPngBlob } from "../utils/canvas";
-import { getTileImage } from "../api/tiles";
+import { getTilePixels } from "../api/tiles";
 import "./TileEditorPanel.css";
 
 interface TileEditorPanelProps {
   isOpen: boolean;
   tile: TileCoordinates | null;
   onClose: () => void;
-  onSave: (tileX: number, tileY: number, pngBlob: Blob) => Promise<void>;
+  onSave: (tileX: number, tileY: number, pixelData: Uint8Array) => Promise<void>;
+  onPanToTile?: () => void;
+  onPreviewChange?: (pixelData: Uint8Array | null) => void;
 }
 
 const MAX_RECENT_COLORS = 10;
 
-export function TileEditorPanel({ isOpen, tile, onClose, onSave }: TileEditorPanelProps) {
+export function TileEditorPanel({
+  isOpen,
+  tile,
+  onClose,
+  onSave,
+  onPanToTile,
+  onPreviewChange,
+}: TileEditorPanelProps) {
   const [color, setColor] = useState("#000000");
   const [tool, setTool] = useState<Tool>("pencil");
   const [showGrid, setShowGrid] = useState(true);
@@ -37,6 +45,8 @@ export function TileEditorPanel({ isOpen, tile, onClose, onSave }: TileEditorPan
     fill: (color: string) => void;
     getCanvas: () => HTMLCanvasElement;
     loadFromImage: (img: HTMLImageElement) => void;
+    loadFromRgbBytes: (rgb: Uint8Array) => void;
+    toRgbBytes: () => Uint8Array;
     setShowGrid: (show: boolean) => void;
     undo: () => boolean;
     redo: () => boolean;
@@ -50,6 +60,8 @@ export function TileEditorPanel({ isOpen, tile, onClose, onSave }: TileEditorPan
       fill: (color: string) => void;
       getCanvas: () => HTMLCanvasElement;
       loadFromImage: (img: HTMLImageElement) => void;
+      loadFromRgbBytes: (rgb: Uint8Array) => void;
+      toRgbBytes: () => Uint8Array;
       setShowGrid: (show: boolean) => void;
       undo: () => boolean;
       redo: () => boolean;
@@ -88,24 +100,18 @@ export function TileEditorPanel({ isOpen, tile, onClose, onSave }: TileEditorPan
       setError(null);
 
       try {
-        const blob = await getTileImage(tileX, tileY);
+        const pixels = await getTilePixels(tileX, tileY);
 
         if (cancelled) return;
 
-        if (blob && canvasHelpersRef.current) {
-          const url = URL.createObjectURL(blob);
-          const img = new Image();
-          img.onload = () => {
-            if (!cancelled && canvasHelpersRef.current) {
-              canvasHelpersRef.current.loadFromImage(img);
-              updateUndoRedoState();
-            }
-            URL.revokeObjectURL(url);
-          };
-          img.onerror = () => {
-            URL.revokeObjectURL(url);
-          };
-          img.src = url;
+        if (pixels && canvasHelpersRef.current) {
+          canvasHelpersRef.current.loadFromRgbBytes(pixels);
+          updateUndoRedoState();
+          // Emit initial preview
+          onPreviewChange?.(pixels);
+        } else if (canvasHelpersRef.current) {
+          // Empty tile - emit current canvas state
+          onPreviewChange?.(canvasHelpersRef.current.toRgbBytes());
         }
       } catch (err) {
         if (!cancelled) {
@@ -124,35 +130,73 @@ export function TileEditorPanel({ isOpen, tile, onClose, onSave }: TileEditorPan
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [tile, isOpen, updateUndoRedoState]);
+  }, [tile, isOpen, updateUndoRedoState, onPreviewChange]);
 
   // Sync grid toggle with canvas
   useEffect(() => {
     canvasHelpersRef.current?.setShowGrid(showGrid);
   }, [showGrid]);
 
+  // Throttle preview updates to avoid performance issues during drawing
+  const previewThrottleRef = useRef<number | null>(null);
+
+  // Cleanup throttle timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (previewThrottleRef.current) {
+        clearTimeout(previewThrottleRef.current);
+      }
+    };
+  }, []);
+
+  // Emit current canvas state as preview (immediate, for undo/redo/clear)
+  const emitPreview = useCallback(() => {
+    if (onPreviewChange && canvasHelpersRef.current) {
+      onPreviewChange(canvasHelpersRef.current.toRgbBytes());
+    }
+  }, [onPreviewChange]);
+
+  // Throttled preview emit for drawing (limits updates to ~30fps)
+  const emitPreviewThrottled = useCallback(() => {
+    if (!onPreviewChange || !canvasHelpersRef.current) return;
+
+    if (previewThrottleRef.current) return; // Already scheduled
+
+    previewThrottleRef.current = window.setTimeout(() => {
+      previewThrottleRef.current = null;
+      if (canvasHelpersRef.current) {
+        onPreviewChange(canvasHelpersRef.current.toRgbBytes());
+      }
+    }, 33); // ~30fps
+  }, [onPreviewChange]);
+
   const handleClear = useCallback(() => {
     canvasHelpersRef.current?.clear();
     updateUndoRedoState();
     setHasChanges(true);
-  }, [updateUndoRedoState]);
+    emitPreview();
+  }, [updateUndoRedoState, emitPreview]);
 
   const handleUndo = useCallback(() => {
     canvasHelpersRef.current?.undo();
     updateUndoRedoState();
     setHasChanges(true);
-  }, [updateUndoRedoState]);
+    emitPreview();
+  }, [updateUndoRedoState, emitPreview]);
 
   const handleRedo = useCallback(() => {
     canvasHelpersRef.current?.redo();
     updateUndoRedoState();
     setHasChanges(true);
-  }, [updateUndoRedoState]);
+    emitPreview();
+  }, [updateUndoRedoState, emitPreview]);
 
   // Called when canvas content changes (drawing)
   const handleCanvasChange = useCallback(() => {
     setHasChanges(true);
-  }, []);
+    // Emit throttled preview for smooth drawing
+    emitPreviewThrottled();
+  }, [emitPreviewThrottled]);
 
   // Add color to recent colors
   const addToRecentColors = useCallback((newColor: string) => {
@@ -194,9 +238,8 @@ export function TileEditorPanel({ isOpen, tile, onClose, onSave }: TileEditorPan
       if (!forceSkipCheck && !hasChanges) return null;
 
       try {
-        const canvas = canvasHelpersRef.current.getCanvas();
-        const blob = await toPngBlob(canvas);
-        await onSave(tileCoords.x, tileCoords.y, blob);
+        const rgbBytes = canvasHelpersRef.current.toRgbBytes();
+        await onSave(tileCoords.x, tileCoords.y, rgbBytes);
         setHasChanges(false);
         return true;
       } catch (err) {
@@ -211,6 +254,9 @@ export function TileEditorPanel({ isOpen, tile, onClose, onSave }: TileEditorPan
   // Auto-save and close
   const handleClose = useCallback(async () => {
     if (isSaving || !tile) return;
+
+    // Clear preview immediately
+    onPreviewChange?.(null);
 
     // If no changes, just close immediately
     if (!hasChanges) {
@@ -241,7 +287,7 @@ export function TileEditorPanel({ isOpen, tile, onClose, onSave }: TileEditorPan
       setIsSaving(false);
       onClose();
     }
-  }, [isSaving, hasChanges, tile, saveToTile, onClose]);
+  }, [isSaving, hasChanges, tile, saveToTile, onClose, onPreviewChange]);
 
   // Track previous tile and its changes state to auto-save when switching tiles
   const prevTileRef = useRef<TileCoordinates | null>(null);
@@ -356,13 +402,24 @@ export function TileEditorPanel({ isOpen, tile, onClose, onSave }: TileEditorPan
           <h2 className="tile-editor-panel__title">
             Tile ({tile.x}, {tile.y})
           </h2>
-          <button
-            className="tile-editor-panel__close"
-            onClick={handleClose}
-            aria-label="Save and close"
-          >
-            <X size={20} />
-          </button>
+          <div className="tile-editor-panel__header-actions">
+            {onPanToTile && (
+              <button
+                className="tile-editor-panel__header-btn"
+                onClick={onPanToTile}
+                title="Pan to tile"
+              >
+                <Crosshair size={18} />
+              </button>
+            )}
+            <button
+              className="tile-editor-panel__close"
+              onClick={handleClose}
+              aria-label="Save and close"
+            >
+              <Check size={20} />
+            </button>
+          </div>
         </div>
 
         <div className="tile-editor-panel__content">

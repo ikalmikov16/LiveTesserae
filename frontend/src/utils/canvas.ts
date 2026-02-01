@@ -1,30 +1,4 @@
 /**
- * Convert a canvas to a PNG Blob for API upload.
- */
-export function toPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => {
-        if (blob) {
-          resolve(blob);
-        } else {
-          reject(new Error("Failed to create PNG blob"));
-        }
-      },
-      "image/png",
-      1.0
-    );
-  });
-}
-
-/**
- * Convert a canvas to a PNG data URL for preview.
- */
-export function toPngDataUrl(canvas: HTMLCanvasElement): string {
-  return canvas.toDataURL("image/png");
-}
-
-/**
  * Clear a canvas by filling it with white.
  */
 export function clearCanvas(ctx: CanvasRenderingContext2D, width: number, height: number): void {

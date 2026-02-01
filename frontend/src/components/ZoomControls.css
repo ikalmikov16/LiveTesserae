@@ -46,6 +46,20 @@
   /* No padding-top - flexbox centers the icon properly */
 }
 
+.zoom-controls__btn--grid {
+  margin-top: var(--space-xs);
+  border-top: 1px solid var(--color-border);
+}
+
+.zoom-controls__btn--active {
+  background: var(--color-accent);
+  color: white;
+}
+
+.zoom-controls__btn--active:hover {
+  background: var(--color-accent-hover);
+}
+
 /* Label */
 .zoom-controls__label {
   font-size: 11px;

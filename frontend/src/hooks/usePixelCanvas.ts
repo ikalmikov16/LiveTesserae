@@ -1,5 +1,6 @@
 import { useRef, useCallback, useState } from "react";
 import { hexToRgb } from "../utils/canvas";
+import { imageDataToRgb, rgbToImageData, PIXEL_DATA_SIZE } from "../utils/pixels";
 import { MOSAIC_CONFIG } from "../config";
 
 const CANVAS_SIZE = MOSAIC_CONFIG.TILE_SIZE; // 32
@@ -238,6 +239,40 @@ export function usePixelCanvas() {
     [initCanvas]
   );
 
+  // Export canvas as RGB bytes (3072 bytes)
+  const toRgbBytes = useCallback((): Uint8Array => {
+    const { ctx } = initCanvas();
+    if (!ctx) {
+      // Return white tile if canvas not initialized
+      return new Uint8Array(PIXEL_DATA_SIZE).fill(255);
+    }
+
+    const imageData = ctx.getImageData(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+    return imageDataToRgb(imageData);
+  }, [initCanvas]);
+
+  // Load from RGB bytes (3072 bytes)
+  const loadFromRgbBytes = useCallback(
+    (rgb: Uint8Array) => {
+      const { ctx } = initCanvas();
+      if (!ctx) return;
+
+      // Validate size
+      if (rgb.length !== PIXEL_DATA_SIZE) {
+        console.warn(`Invalid pixel data size: ${rgb.length}, expected ${PIXEL_DATA_SIZE}`);
+        return;
+      }
+
+      const imageData = rgbToImageData(rgb);
+      ctx.putImageData(imageData, 0, 0);
+
+      // Reset history for loaded tile
+      setHistory([imageData]);
+      setHistoryIndex(0);
+    },
+    [initCanvas]
+  );
+
   // Reset history (for new canvas)
   const resetHistory = useCallback(() => {
     const { ctx } = initCanvas();
@@ -261,6 +296,8 @@ export function usePixelCanvas() {
     floodFill,
     getCanvas,
     loadFromImage,
+    loadFromRgbBytes,
+    toRgbBytes,
     resetHistory,
     beginDrawing,
     undo,

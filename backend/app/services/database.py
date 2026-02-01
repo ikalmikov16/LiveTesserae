@@ -1,5 +1,7 @@
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncIterator
 
 import asyncpg
 
@@ -28,6 +30,21 @@ class Database:
         if self.pool:
             await self.pool.close()
             logger.info("Database connection pool closed")
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[asyncpg.Connection]:
+        """
+        Get a connection with an active transaction.
+
+        Usage:
+            async with db.transaction() as conn:
+                await conn.execute(...)
+                await conn.fetchrow(...)
+                # Automatically commits on success, rolls back on exception
+        """
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                yield conn
 
     async def execute(self, query: str, *args) -> str:
         """Execute a query and return status."""

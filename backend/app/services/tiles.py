@@ -99,69 +99,63 @@ async def get_tile_metadata(x: int, y: int) -> dict | None:
     }
 
 
-async def save_tile(x: int, y: int, image_data: bytes) -> dict:
+async def save_tile(x: int, y: int, pixel_data: bytes) -> dict:
     """
-    Save a tile image, update database, and re-render chunk.
+    Save a tile from raw RGB pixel data.
 
-    - Saves image to filesystem
-    - Upserts tile record in database
-    - Increments version if tile already exists
-    - Re-renders the chunk (Level 1) synchronously
-    - Marks overview (Level 0) as stale
+    Args:
+        x: Tile X coordinate (0-999)
+        y: Tile Y coordinate (0-999)
+        pixel_data: 3072 bytes of RGB data (32×32×3)
 
-    Returns tile metadata including chunk version for cache busting.
-
-    Note: If database write fails, the saved image is cleaned up to prevent orphan files.
+    Returns:
+        Tile metadata dict
     """
     tile_id = calculate_tile_id(x, y)
     chunk_id = calculate_chunk_id(x, y)
-
-    # Calculate chunk coordinates
     cx = x // settings.chunk_size
     cy = y // settings.chunk_size
 
-    # Save image to filesystem first
-    await storage.save_tile_image(x, y, image_data)
-
     try:
-        # Upsert tile record (insert or update)
-        row = await db.fetchrow(
-            """
-            INSERT INTO tiles (tile_id, chunk_id, version, updated_at)
-            VALUES ($1, $2, 1, NOW())
-            ON CONFLICT (tile_id) DO UPDATE SET
-                version = tiles.version + 1,
-                updated_at = NOW()
-            RETURNING tile_id, chunk_id, version, updated_at
-            """,
-            tile_id,
-            chunk_id,
-        )
+        # Use transaction to ensure tile and chunk updates are atomic
+        async with db.transaction() as conn:
+            # Upsert tile with pixel_data
+            row = await conn.fetchrow(
+                """
+                INSERT INTO tiles (tile_id, chunk_id, pixel_data, version, updated_at)
+                VALUES ($1, $2, $3, 1, NOW())
+                ON CONFLICT (tile_id) DO UPDATE SET
+                    pixel_data = $3,
+                    version = tiles.version + 1,
+                    updated_at = NOW()
+                RETURNING tile_id, chunk_id, version, updated_at
+                """,
+                tile_id,
+                chunk_id,
+                pixel_data,
+            )
 
-        # Update chunk in DB (for tracking)
-        await db.execute(
-            """
-            INSERT INTO chunks (chunk_id, dirty, version)
-            VALUES ($1, FALSE, 1)
-            ON CONFLICT (chunk_id) DO UPDATE SET
-                dirty = FALSE,
-                version = chunks.version + 1
-            """,
-            chunk_id,
-        )
+            # Update chunk tracking (in same transaction)
+            await conn.execute(
+                """
+                INSERT INTO chunks (chunk_id, dirty, version)
+                VALUES ($1, FALSE, 1)
+                ON CONFLICT (chunk_id) DO UPDATE SET
+                    dirty = FALSE,
+                    version = chunks.version + 1
+                """,
+                chunk_id,
+            )
 
-        # Fire and forget - update chunk and overview in background
-        # This makes API response much faster (don't wait for image rendering)
-        _schedule_background_task(_update_chunk_and_overview(cx, cy, x, y, image_data))
+        # Background: update chunk and overview (after transaction commits)
+        _schedule_background_task(_update_chunk_and_overview(cx, cy, x, y, pixel_data))
 
         logger.info(
             f"Saved tile {tile_id} (version {row['version']}), chunk update scheduled"
         )
 
     except Exception as e:
-        # Clean up the saved image if database operation failed
-        logger.error(f"Database error saving tile {tile_id}, cleaning up image: {e}")
-        await storage.delete_tile_image(x, y)
+        logger.error(f"Database error saving tile {tile_id}: {e}")
         raise
 
     return {
@@ -178,12 +172,11 @@ async def delete_tile(x: int, y: int) -> dict | None:
     """
     Delete a tile (reset to default) and re-render chunk.
 
-    - Removes image from filesystem
     - Deletes tile record from database
-    - Re-renders the chunk (Level 1) synchronously
-    - Marks overview (Level 0) as stale
+    - Re-renders the chunk (Level 1) in background
+    - Updates overview (Level 0) in background
 
-    Returns deletion info with chunk_version, or None if tile didn't exist.
+    Returns deletion info, or None if tile didn't exist.
     """
     tile_id = calculate_tile_id(x, y)
     chunk_id = calculate_chunk_id(x, y)
@@ -192,32 +185,30 @@ async def delete_tile(x: int, y: int) -> dict | None:
     cx = x // settings.chunk_size
     cy = y // settings.chunk_size
 
-    # Delete from database
-    result = await db.execute(
-        "DELETE FROM tiles WHERE tile_id = $1",
-        tile_id,
-    )
-
-    # Delete from filesystem
-    await storage.delete_tile_image(x, y)
-
-    # Update chunk if tile existed
-    if "DELETE 1" in result:
-        # Update chunk in DB
-        await db.execute(
-            """
-            INSERT INTO chunks (chunk_id, dirty, version)
-            VALUES ($1, FALSE, 1)
-            ON CONFLICT (chunk_id) DO UPDATE SET
-                dirty = FALSE,
-                version = chunks.version + 1
-            """,
-            chunk_id,
+    # Use transaction to ensure delete and chunk update are atomic
+    async with db.transaction() as conn:
+        # Delete from database
+        result = await conn.execute(
+            "DELETE FROM tiles WHERE tile_id = $1",
+            tile_id,
         )
 
-        # Fire and forget - update chunk and overview in background
-        _schedule_background_task(_update_chunk_and_overview(cx, cy, x, y, None))
+        # Update chunk if tile existed (in same transaction)
+        if "DELETE 1" in result:
+            await conn.execute(
+                """
+                INSERT INTO chunks (chunk_id, dirty, version)
+                VALUES ($1, FALSE, 1)
+                ON CONFLICT (chunk_id) DO UPDATE SET
+                    dirty = FALSE,
+                    version = chunks.version + 1
+                """,
+                chunk_id,
+            )
 
+    # After transaction commits, schedule background updates
+    if "DELETE 1" in result:
+        _schedule_background_task(_update_chunk_and_overview(cx, cy, x, y, None))
         logger.info(f"Deleted tile {tile_id}, chunk update scheduled")
 
         return {
@@ -228,13 +219,21 @@ async def delete_tile(x: int, y: int) -> dict | None:
     return None
 
 
-async def get_tile_image(x: int, y: int) -> bytes | None:
+async def get_tile_pixel_data(x: int, y: int) -> bytes | None:
     """
-    Get tile image data.
+    Get tile RGB pixel data from database.
 
-    Returns None if tile doesn't exist (is default).
+    Returns:
+        3072 bytes of RGB data, or None if tile doesn't exist (default white)
     """
-    return await storage.get_tile_image(x, y)
+    tile_id = calculate_tile_id(x, y)
+
+    result = await db.fetchval(
+        "SELECT pixel_data FROM tiles WHERE tile_id = $1",
+        tile_id,
+    )
+
+    return result
 
 
 async def tile_exists(x: int, y: int) -> bool:

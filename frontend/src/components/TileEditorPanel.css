@@ -47,6 +47,31 @@
   margin: 0;
 }
 
+.tile-editor-panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.tile-editor-panel__header-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.tile-editor-panel__header-btn:hover {
+  background: rgba(74, 158, 255, 0.15);
+  color: var(--color-accent);
+}
+
 .tile-editor-panel__close {
   display: flex;
   align-items: center;

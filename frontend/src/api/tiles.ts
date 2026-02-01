@@ -1,19 +1,23 @@
 import { API_BASE_URL } from "../config";
 
 /**
- * Save a tile image to the backend.
+ * Save tile pixel data to the backend.
  * PUT /api/tiles/{x}/{y}
  */
 export async function saveTile(
   x: number,
   y: number,
-  pngBlob: Blob
+  pixelData: Uint8Array
 ): Promise<{ tile_id: string; chunk_id: string; version: number }> {
+  // Create a proper ArrayBuffer copy for fetch body
+  const buffer = new ArrayBuffer(pixelData.length);
+  new Uint8Array(buffer).set(pixelData);
+
   const response = await fetch(`${API_BASE_URL}/api/tiles/${x}/${y}`, {
     method: "PUT",
-    body: pngBlob,
+    body: buffer,
     headers: {
-      "Content-Type": "image/png",
+      "Content-Type": "application/octet-stream",
     },
   });
 
@@ -26,19 +30,16 @@ export async function saveTile(
 }
 
 /**
- * Get a tile image from the backend.
+ * Get tile pixel data from the backend.
  * GET /api/tiles/{x}/{y}
  * Returns null if tile is default (404).
  */
-export async function getTileImage(x: number, y: number): Promise<Blob | null> {
-  // Use cache: 'no-store' to always get fresh data
-  // This is important because other users may have updated the tile
+export async function getTilePixels(x: number, y: number): Promise<Uint8Array | null> {
   const response = await fetch(`${API_BASE_URL}/api/tiles/${x}/${y}`, {
     cache: "no-store",
   });
 
   if (response.status === 404) {
-    // Tile doesn't exist (is default)
     return null;
   }
 
@@ -46,23 +47,8 @@ export async function getTileImage(x: number, y: number): Promise<Blob | null> {
     throw new Error(`Failed to get tile: ${response.status}`);
   }
 
-  return response.blob();
-}
-
-/**
- * Get tile image as a data URL for loading into canvas.
- * Returns null if tile is default (404).
- */
-export async function getTileImageUrl(x: number, y: number): Promise<string | null> {
-  const blob = await getTileImage(x, y);
-  if (!blob) return null;
-
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
+  const buffer = await response.arrayBuffer();
+  return new Uint8Array(buffer);
 }
 
 /**

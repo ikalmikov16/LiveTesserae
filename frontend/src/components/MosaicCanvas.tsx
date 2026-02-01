@@ -7,9 +7,11 @@ import {
   getOverviewVersion,
   getChunkVersion,
 } from "../api/chunks";
-import { tileLoader } from "../utils/tileLoader";
+import { tileLoader, TILE_CANCELLED } from "../utils/tileLoader";
+import { rgbToImageData } from "../utils/pixels";
+import { LRUCache } from "../utils/lruCache";
 import { ZoomControls } from "./ZoomControls";
-import type { TileCoordinates, TileWithImage } from "../types";
+import type { TileCoordinates, TileWithPixels } from "../types";
 
 const { TILE_SIZE, GRID_WIDTH, GRID_HEIGHT, CHUNK_SIZE } = MOSAIC_CONFIG;
 const MOSAIC_WIDTH = GRID_WIDTH * TILE_SIZE;
@@ -20,18 +22,33 @@ const CHUNKS_PER_ROW = GRID_WIDTH / CHUNK_SIZE; // 10
 const LEVEL_0_THRESHOLD = 3; // tile < 3px = show overview
 const LEVEL_1_THRESHOLD = 24; // tile < 24px = show chunks
 
+// Grid shows at Level 2 when tiles are at least this size
+const GRID_THRESHOLD = 19; // ~60% zoom
+
+// Cache size limits to prevent memory leaks
+const MAX_TILE_CACHE_SIZE = 1000; // Max tiles to keep in memory (~3MB)
+const MAX_CHUNK_CACHE_SIZE = 50; // Max chunks to keep in memory (~150MB max)
+
 interface ChunkCache {
   image: HTMLImageElement;
   version: number;
 }
 
+interface TilePreview {
+  x: number;
+  y: number;
+  pixelData: Uint8Array;
+}
+
 interface MosaicCanvasProps {
   onTileClick?: (coords: TileCoordinates) => void;
-  tileUpdate?: TileWithImage | null;
+  tileUpdate?: TileWithPixels | null;
   onTileUpdateProcessed?: () => void;
   onViewportChange?: (offsetX: number, offsetY: number, zoom: number) => void;
   onOverviewLoad?: (image: HTMLImageElement) => void;
   navigateTo?: { x: number; y: number } | null;
+  tilePreview?: TilePreview | null;
+  selectedTile?: TileCoordinates | null;
 }
 
 export function MosaicCanvas({
@@ -41,13 +58,50 @@ export function MosaicCanvas({
   onViewportChange,
   onOverviewLoad,
   navigateTo,
+  tilePreview,
+  selectedTile,
 }: MosaicCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [canvasSize, setCanvasSize] = useState({
     width: window.innerWidth,
     height: window.innerHeight,
   });
-  const [tileImages, setTileImages] = useState<Map<string, HTMLImageElement>>(new Map());
+  // Use LRU cache for tile data to prevent unbounded memory growth
+  const tileDataRef = useRef(new LRUCache<string, Uint8Array>(MAX_TILE_CACHE_SIZE));
+  const [tileDataVersion, setTileDataVersion] = useState(0); // Trigger re-renders on cache updates
+  const [showGrid, setShowGrid] = useState(true); // Toggle with 'G' key
+
+  // Offscreen canvas for rendering RGB data
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const getOffscreenCanvas = useCallback((): HTMLCanvasElement => {
+    if (!offscreenCanvasRef.current) {
+      offscreenCanvasRef.current = document.createElement("canvas");
+      offscreenCanvasRef.current.width = TILE_SIZE;
+      offscreenCanvasRef.current.height = TILE_SIZE;
+    }
+    return offscreenCanvasRef.current;
+  }, []);
+
+  // Render RGB tile data to canvas
+  const renderTileData = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      screenX: number,
+      screenY: number,
+      rgb: Uint8Array,
+      screenTileSize: number
+    ) => {
+      const offscreen = getOffscreenCanvas();
+      const offCtx = offscreen.getContext("2d")!;
+      const imageData = rgbToImageData(rgb);
+      offCtx.putImageData(imageData, 0, 0);
+
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(offscreen, screenX, screenY, screenTileSize, screenTileSize);
+    },
+    [getOffscreenCanvas]
+  );
 
   // Viewport state with pan/zoom
   const { viewport, pan, zoomAt, setZoom, setOffset, resetView, minZoom, maxZoom } = useViewport(
@@ -71,9 +125,10 @@ export function MosaicCanvas({
   // Multi-level rendering state
   const [mosaicOverview, setMosaicOverview] = useState<HTMLImageElement | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
-  const chunkCacheRef = useRef<Map<string, ChunkCache>>(new Map());
+  // Use LRU cache for chunk images to prevent unbounded memory growth
+  const chunkCacheRef = useRef(new LRUCache<string, ChunkCache>(MAX_CHUNK_CACHE_SIZE));
   const loadingChunksRef = useRef<Set<string>>(new Set());
-  const [, forceUpdate] = useState(0); // Trigger re-render when chunks load
+  const [chunkCacheVersion, setChunkCacheVersion] = useState(0); // Trigger re-render when chunks load
 
   // Determine render level based on zoom
   const screenTileSize = TILE_SIZE * zoom;
@@ -139,6 +194,10 @@ export function MosaicCanvas({
   // Track tiles being loaded and tiles that don't exist (404)
   const loadingTilesRef = useRef<Set<string>>(new Set());
   const nonExistentTilesRef = useRef<Set<string>>(new Set());
+
+  // Animation state for selection indicator pulse
+  const [selectionPulse, setSelectionPulse] = useState(0);
+  const selectionAnimationRef = useRef<number | null>(null);
 
   // Draw the canvas with viewport transform
   const drawCanvas = useCallback(() => {
@@ -216,16 +275,27 @@ export function MosaicCanvas({
       const cache = chunkCacheRef.current;
       const chunkWorldSize = CHUNK_SIZE * TILE_SIZE;
 
-      // Draw white mosaic area as base
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(
-        Math.round(mosaicScreenX),
-        Math.round(mosaicScreenY),
-        Math.round(mosaicScreenW),
-        Math.round(mosaicScreenH)
-      );
+      // Draw overview as base fallback (blurry but better than white)
+      if (mosaicOverview) {
+        ctx.drawImage(
+          mosaicOverview,
+          Math.round(mosaicScreenX),
+          Math.round(mosaicScreenY),
+          Math.round(mosaicScreenW),
+          Math.round(mosaicScreenH)
+        );
+      } else {
+        // No overview yet, draw white background
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(
+          Math.round(mosaicScreenX),
+          Math.round(mosaicScreenY),
+          Math.round(mosaicScreenW),
+          Math.round(mosaicScreenH)
+        );
+      }
 
-      // Draw visible chunks as preview layer (will be overdrawn by sharp tiles)
+      // Draw visible chunks as sharper preview layer (will be overdrawn by sharp tiles)
       getVisibleChunks().forEach(({ cx, cy }) => {
         const cached = cache.get(`${cx}_${cy}`);
         if (cached) {
@@ -237,8 +307,8 @@ export function MosaicCanvas({
         }
       });
 
-      // Draw loaded tile images on top (sharp tiles replace blurry chunk preview)
-      tileImages.forEach((img, key) => {
+      // Draw loaded tile data on top (sharp tiles replace blurry chunk preview)
+      tileDataRef.current.forEach((rgb, key) => {
         const [tileX, tileY] = key.split(":").map(Number);
 
         // Calculate exact pixel boundaries using rounding to avoid seams
@@ -247,17 +317,33 @@ export function MosaicCanvas({
         const x2 = Math.round(((tileX + 1) * TILE_SIZE - offsetX) * zoom);
         const y2 = Math.round(((tileY + 1) * TILE_SIZE - offsetY) * zoom);
         const tileW = x2 - x1;
-        const tileH = y2 - y1;
 
         // Only draw if tile is visible in viewport
         if (x2 > 0 && x1 < width && y2 > 0 && y1 < height) {
-          ctx.drawImage(img, x1, y1, tileW, tileH);
+          renderTileData(ctx, x1, y1, rgb, tileW);
         }
       });
 
-      // Draw grid lines only at Level 2 (individual tiles) and if tiles are large enough
-      if (renderLevel === 2 && screenTileSize >= 8) {
-        ctx.strokeStyle = "#e0e0e0";
+      // Draw tile preview overlay (live editing preview before save)
+      if (tilePreview) {
+        const x1 = Math.round((tilePreview.x * TILE_SIZE - offsetX) * zoom);
+        const y1 = Math.round((tilePreview.y * TILE_SIZE - offsetY) * zoom);
+        const x2 = Math.round(((tilePreview.x + 1) * TILE_SIZE - offsetX) * zoom);
+        const y2 = Math.round(((tilePreview.y + 1) * TILE_SIZE - offsetY) * zoom);
+        const tileW = x2 - x1;
+
+        // Only draw if preview tile is visible
+        if (x2 > 0 && x1 < width && y2 > 0 && y1 < height) {
+          renderTileData(ctx, x1, y1, tilePreview.pixelData, tileW);
+        }
+      }
+
+      // Draw grid lines at Level 2 when zoomed in enough (toggleable with 'G' key)
+      if (renderLevel === 2 && showGrid && screenTileSize >= GRID_THRESHOLD) {
+        // Use "difference" blend mode so grid is always visible regardless of tile colors
+        ctx.save();
+        ctx.globalCompositeOperation = "difference";
+        ctx.strokeStyle = "#ffffff"; // White + difference = inverts underlying colors
         ctx.lineWidth = 1;
 
         // Calculate visible tile range
@@ -283,10 +369,34 @@ export function MosaicCanvas({
           ctx.lineTo(Math.min(width, mosaicScreenX + mosaicScreenW), screenY + 0.5);
         }
         ctx.stroke();
+        ctx.restore();
       }
     }
+
+    // Draw selection indicator for selected tile (on all levels, after everything else)
+    const tileToHighlight =
+      selectedTile || (tilePreview ? { x: tilePreview.x, y: tilePreview.y } : null);
+    if (tileToHighlight) {
+      const x1 = Math.round((tileToHighlight.x * TILE_SIZE - offsetX) * zoom);
+      const y1 = Math.round((tileToHighlight.y * TILE_SIZE - offsetY) * zoom);
+      const x2 = Math.round(((tileToHighlight.x + 1) * TILE_SIZE - offsetX) * zoom);
+      const y2 = Math.round(((tileToHighlight.y + 1) * TILE_SIZE - offsetY) * zoom);
+      const tileW = x2 - x1;
+      const tileH = y2 - y1;
+
+      // Only draw if tile is visible
+      if (x2 > 0 && x1 < width && y2 > 0 && y1 < height) {
+        // Pulsing black border (opacity varies from 0.2 to 1.0)
+        const opacity = 0.2 + selectionPulse * 0.8;
+        ctx.strokeStyle = `rgba(0, 0, 0, ${opacity})`;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x1, y1, tileW, tileH);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- version counters trigger re-render when refs change
   }, [
-    tileImages,
+    tileDataVersion,
+    chunkCacheVersion,
     offsetX,
     offsetY,
     zoom,
@@ -294,7 +404,44 @@ export function MosaicCanvas({
     mosaicOverview,
     getVisibleChunks,
     screenTileSize,
+    renderTileData,
+    showGrid,
+    tilePreview,
+    selectedTile,
+    selectionPulse,
   ]);
+
+  // Animation loop for selection indicator pulse
+  useEffect(() => {
+    if (!selectedTile) {
+      // No selection, stop animation
+      if (selectionAnimationRef.current) {
+        cancelAnimationFrame(selectionAnimationRef.current);
+        selectionAnimationRef.current = null;
+      }
+      return;
+    }
+
+    // Start animation loop
+    let startTime: number | null = null;
+    const animate = (timestamp: number) => {
+      if (!startTime) startTime = timestamp;
+      const elapsed = timestamp - startTime;
+      // Pulse every 1.5 seconds (using sine wave for smooth fade)
+      const pulse = (Math.sin((elapsed / 750) * Math.PI) + 1) / 2; // 0 to 1
+      setSelectionPulse(pulse);
+      selectionAnimationRef.current = requestAnimationFrame(animate);
+    };
+
+    selectionAnimationRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      if (selectionAnimationRef.current) {
+        cancelAnimationFrame(selectionAnimationRef.current);
+        selectionAnimationRef.current = null;
+      }
+    };
+  }, [selectedTile]);
 
   // Process tile updates (from WebSocket or local saves)
   useEffect(() => {
@@ -310,47 +457,34 @@ export function MosaicCanvas({
     // Clear non-existent flag in case tile was previously 404
     nonExistentTilesRef.current.delete(key);
 
-    // Handle tile image for Level 2
-    if (tileUpdate.imageData) {
-      const img = new Image();
-
-      img.onload = () => {
-        setTileImages((prev) => {
-          const newMap = new Map(prev);
-          newMap.set(key, img);
-          return newMap;
-        });
-        onTileUpdateProcessed?.();
-      };
-
-      img.onerror = () => {
-        console.error(`Failed to load tile image (${tileUpdate.x}, ${tileUpdate.y})`);
-        onTileUpdateProcessed?.();
-      };
-
-      img.src = tileUpdate.imageData;
+    // Handle tile pixel data for Level 2
+    if (tileUpdate.pixelData) {
+      tileDataRef.current.set(key, tileUpdate.pixelData!);
+      setTileDataVersion((n) => n + 1); // Trigger re-render
+      onTileUpdateProcessed?.();
     }
 
-    // Reload chunk for Level 1 after a short delay
-    // Backend updates chunks asynchronously, so we wait a bit before fetching
+    // Reload chunk for Level 1 after a delay
+    // Backend updates chunks asynchronously, so we wait for it to finish
     const reloadChunk = async () => {
       // Wait for backend to finish rendering (async background task)
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      // Local saves need more time since the broadcast happens before render completes
+      await new Promise((resolve) => setTimeout(resolve, 500));
       try {
         const versionInfo = await getChunkVersion(cx, cy);
         const img = await loadChunkImage(cx, cy, versionInfo.version);
         chunkCacheRef.current.set(chunkKey, { image: img, version: versionInfo.version });
-        forceUpdate((n) => n + 1);
+        setChunkCacheVersion((n) => n + 1);
       } catch (error) {
         console.error(`Failed to reload chunk ${chunkKey}:`, error);
       }
     };
     reloadChunk();
 
-    // Reload overview for Level 0 after a short delay
+    // Reload overview for Level 0 after a delay
     const reloadOverview = async () => {
       // Wait for backend to finish rendering (async background task)
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await new Promise((resolve) => setTimeout(resolve, 600));
       try {
         const versionInfo = await getOverviewVersion();
         const img = await loadOverviewImage(versionInfo.version);
@@ -365,6 +499,10 @@ export function MosaicCanvas({
 
   // Track if canvas has been initialized
   const [isCanvasReady, setIsCanvasReady] = useState(false);
+
+  // RAF batching - prevent multiple drawCanvas calls per frame
+  const rafIdRef = useRef<number | null>(null);
+  const pendingDrawRef = useRef(false);
 
   // Load overview on mount (for initial page load)
   useEffect(() => {
@@ -388,38 +526,55 @@ export function MosaicCanvas({
     loadOverview();
   }, [overviewLoading, mosaicOverview, onOverviewLoad]);
 
-  // Load missing chunks when at Level 1 or Level 2 (used as fallback preview)
+  // Load missing or outdated chunks when at Level 1 or Level 2 (used as fallback preview)
+  // Debounced to prevent excessive requests during fast panning
   useEffect(() => {
     if (renderLevel === 0) return;
 
-    const visibleChunks = getVisibleChunks();
-    const cache = chunkCacheRef.current;
-    const loading = loadingChunksRef.current;
+    // Debounce chunk loading to avoid overwhelming the server during fast panning
+    const timeoutId = setTimeout(() => {
+      const visibleChunks = getVisibleChunks();
+      const cache = chunkCacheRef.current;
+      const loading = loadingChunksRef.current;
 
-    visibleChunks.forEach(({ cx, cy }) => {
-      const key = `${cx}_${cy}`;
-      if (cache.has(key) || loading.has(key)) return;
+      visibleChunks.forEach(({ cx, cy }) => {
+        const key = `${cx}_${cy}`;
+        if (loading.has(key)) return;
 
-      loading.add(key);
+        const cached = cache.get(key);
 
-      // Fetch version first for cache busting, then load image
-      getChunkVersion(cx, cy)
-        .then((versionInfo) => {
-          return loadChunkImage(cx, cy, versionInfo.version).then((img) => ({
-            img,
-            version: versionInfo.version,
-          }));
-        })
-        .then(({ img, version }) => {
-          cache.set(key, { image: img, version });
-          loading.delete(key);
-          forceUpdate((n) => n + 1); // Trigger re-render
-        })
-        .catch((error) => {
-          console.error(`Failed to load chunk ${key}:`, error);
-          loading.delete(key);
-        });
-    });
+        // Always check server version (even if cached) to detect updates
+        loading.add(key);
+
+        getChunkVersion(cx, cy)
+          .then((versionInfo) => {
+            // If cached version matches server, skip reload
+            if (cached && cached.version === versionInfo.version) {
+              loading.delete(key);
+              return null;
+            }
+
+            // Load new version
+            return loadChunkImage(cx, cy, versionInfo.version).then((img) => ({
+              img,
+              version: versionInfo.version,
+            }));
+          })
+          .then((result) => {
+            if (result) {
+              cache.set(key, { image: result.img, version: result.version });
+              loading.delete(key);
+              setChunkCacheVersion((n) => n + 1); // Trigger re-render
+            }
+          })
+          .catch((error) => {
+            console.error(`Failed to load chunk ${key}:`, error);
+            loading.delete(key);
+          });
+      });
+    }, 100); // 100ms debounce for chunk loading
+
+    return () => clearTimeout(timeoutId);
   }, [renderLevel, getVisibleChunks]);
 
   // Load missing tiles when at Level 2 (with debouncing and queue)
@@ -427,6 +582,8 @@ export function MosaicCanvas({
     if (renderLevel !== 2) {
       // Cancel pending requests when leaving Level 2
       tileLoader.cancelAll();
+      // Clear loading set immediately to avoid stale state when returning to Level 2
+      loadingTilesRef.current.clear();
       return;
     }
 
@@ -442,6 +599,14 @@ export function MosaicCanvas({
       // Cancel requests for tiles no longer visible
       tileLoader.cancelNotIn(visibleKeys);
 
+      // Immediately clear cancelled tiles from loading set (don't wait for promise resolution)
+      // This prevents race condition where pan-back happens before promises resolve
+      for (const key of loading) {
+        if (!visibleKeys.has(key)) {
+          loading.delete(key);
+        }
+      }
+
       // Sort tiles by distance from viewport center for priority loading
       const centerX = offsetX + canvasSize.width / zoom / 2;
       const centerY = offsetY + canvasSize.height / zoom / 2;
@@ -452,35 +617,37 @@ export function MosaicCanvas({
         return distA - distB;
       });
 
+      const tileCache = tileDataRef.current;
+
       sortedTiles.forEach(({ x, y }) => {
         const key = getTileKey(x, y);
         // Skip if already loaded, loading, or known to not exist
-        if (tileImages.has(key) || loading.has(key) || nonExistent.has(key)) return;
+        if (tileCache.has(key) || loading.has(key) || nonExistent.has(key)) return;
 
         loading.add(key);
 
         tileLoader
           .loadTile(x, y)
-          .then((dataUrl) => {
+          .then((result) => {
             loading.delete(key);
-            if (dataUrl === null) {
-              // Tile doesn't exist (404) or was cancelled
+
+            if (result === TILE_CANCELLED) {
+              // Request was cancelled (e.g., during panning) - will retry on next render
+              return;
+            }
+
+            if (result === null) {
+              // Tile doesn't exist (404) - mark as non-existent
               nonExistent.add(key);
               return;
             }
 
-            const img = new Image();
-            img.onload = () => {
-              setTileImages((prev) => {
-                const newMap = new Map(prev);
-                newMap.set(key, img);
-                return newMap;
-              });
-            };
-            img.src = dataUrl;
+            // Got valid tile data - add to LRU cache
+            tileCache.set(key, result);
+            setTileDataVersion((n) => n + 1); // Trigger re-render
           })
           .catch(() => {
-            // Request was cancelled or failed, just remove from loading
+            // Request failed, just remove from loading (will retry)
             loading.delete(key);
           });
       });
@@ -490,7 +657,7 @@ export function MosaicCanvas({
   }, [
     renderLevel,
     getVisibleTiles,
-    tileImages,
+    // tileDataVersion not needed - we check the ref directly
     offsetX,
     offsetY,
     zoom,
@@ -526,12 +693,35 @@ export function MosaicCanvas({
     }
   }, [isCanvasReady, resetView]);
 
+  // Schedule a redraw using requestAnimationFrame
+  // Batches multiple draw requests into a single frame
+  const scheduleRedraw = useCallback(() => {
+    if (pendingDrawRef.current) return; // Already scheduled
+
+    pendingDrawRef.current = true;
+    rafIdRef.current = requestAnimationFrame(() => {
+      pendingDrawRef.current = false;
+      rafIdRef.current = null;
+      drawCanvas();
+    });
+  }, [drawCanvas]);
+
+  // Cleanup RAF on unmount
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+    };
+  }, []);
+
   // Redraw canvas when dependencies change (only after canvas is ready)
+  // Uses RAF batching to prevent multiple redraws per frame
   useEffect(() => {
     if (isCanvasReady) {
-      drawCanvas();
+      scheduleRedraw();
     }
-  }, [isCanvasReady, drawCanvas]);
+  }, [isCanvasReady, scheduleRedraw]);
 
   // Global mouse handlers during drag
   useEffect(() => {
@@ -588,6 +778,26 @@ export function MosaicCanvas({
     canvas.addEventListener("wheel", handleWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", handleWheel);
   }, [zoomAt, pan]);
+
+  // Keyboard shortcut for grid toggle (G key)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Only handle 'G' key without modifiers, and not when typing in an input
+      if (
+        (e.key === "g" || e.key === "G") &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !(e.target instanceof HTMLInputElement) &&
+        !(e.target instanceof HTMLTextAreaElement)
+      ) {
+        setShowGrid((prev) => !prev);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // Notify parent of viewport changes immediately (for minimap responsiveness)
   useEffect(() => {
@@ -648,6 +858,8 @@ export function MosaicCanvas({
         maxZoom={maxZoom}
         onZoomChange={setZoom}
         onReset={resetView}
+        showGrid={showGrid}
+        onToggleGrid={() => setShowGrid((prev) => !prev)}
       />
     </>
   );

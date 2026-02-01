@@ -1,15 +1,19 @@
 -- Live Tesserae Database Schema
 -- Tiles and Chunks tables for the collaborative mosaic
 
--- Tiles table: stores metadata for edited tiles only (sparse storage)
--- Note: image_path is NOT stored - it's computed from coordinates as:
---       tiles/{chunk_x}/{chunk_y}/{x}_{y}.png
+-- Tiles table: stores pixel data for edited tiles only (sparse storage)
+-- pixel_data stores raw RGB bytes (3072 bytes = 32×32×3)
 CREATE TABLE IF NOT EXISTS tiles (
     tile_id VARCHAR(11) PRIMARY KEY,  -- "x:y" format, max "999:999"
     chunk_id VARCHAR(7) NOT NULL,     -- "cx:cy" format for efficient queries
+    pixel_data BYTEA,                 -- 3072 bytes of RGB data (32×32×3), NULL = default white
     version INTEGER DEFAULT 1,
     updated_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Migration: Add pixel_data column to existing tables
+-- Run this if upgrading from a previous version:
+-- ALTER TABLE tiles ADD COLUMN IF NOT EXISTS pixel_data BYTEA;
 
 -- Index for efficient chunk queries (loading all tiles in a chunk)
 CREATE INDEX IF NOT EXISTS idx_tiles_chunk ON tiles(chunk_id);

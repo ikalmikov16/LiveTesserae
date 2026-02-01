@@ -1,33 +1,62 @@
+import asyncio
 import logging
+import time
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
 
+# Message batching configuration
+BATCH_WINDOW_MS = 50  # Batch messages within 50ms window
+MAX_BATCH_SIZE = 100  # Maximum messages per batch
+
 
 class ConnectionManager:
-    """Manages WebSocket connections and chunk subscriptions for real-time updates."""
+    """
+    Manages WebSocket connections and chunk subscriptions for real-time updates.
+
+    Optimizations:
+    - Reverse index for O(1) chunk subscriber lookups
+    - Message batching to reduce network overhead
+    - Set-based connection tracking for O(1) removals
+    """
 
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
-        self.subscriptions: dict[WebSocket, set[str]] = (
-            {}
-        )  # connection -> subscribed chunk IDs
+        # Use set for O(1) connection operations
+        self.active_connections: set[WebSocket] = set()
+        # Forward index: connection -> subscribed chunk IDs
+        self.subscriptions: dict[WebSocket, set[str]] = {}
+        # Reverse index: chunk_id -> set of subscribed connections (O(1) lookups)
+        self.chunk_subscribers: dict[str, set[WebSocket]] = {}
+
+        # Message batching state
+        self._pending_messages: dict[str, list[dict]] = {}  # chunk_id -> messages
+        self._batch_task: asyncio.Task | None = None
+        self._batch_lock = asyncio.Lock()
 
     async def connect(self, websocket: WebSocket):
         """Accept a new WebSocket connection."""
         await websocket.accept()
-        self.active_connections.append(websocket)
-        self.subscriptions[websocket] = set()  # Start with no subscriptions
+        self.active_connections.add(websocket)
+        self.subscriptions[websocket] = set()
         logger.info(
             f"WebSocket connected. Total connections: {len(self.active_connections)}"
         )
 
     def disconnect(self, websocket: WebSocket):
         """Remove a WebSocket connection and its subscriptions."""
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+        # Remove from active connections (O(1) with set)
+        self.active_connections.discard(websocket)
+
+        # Remove from all chunk subscriber sets (reverse index cleanup)
         if websocket in self.subscriptions:
+            for chunk_id in self.subscriptions[websocket]:
+                if chunk_id in self.chunk_subscribers:
+                    self.chunk_subscribers[chunk_id].discard(websocket)
+                    # Clean up empty sets
+                    if not self.chunk_subscribers[chunk_id]:
+                        del self.chunk_subscribers[chunk_id]
             del self.subscriptions[websocket]
+
         logger.info(
             f"WebSocket disconnected. Total connections: {len(self.active_connections)}"
         )
@@ -36,32 +65,126 @@ class ConnectionManager:
         """Subscribe a connection to receive updates for specific chunks."""
         if websocket not in self.subscriptions:
             self.subscriptions[websocket] = set()
-        self.subscriptions[websocket].update(chunk_ids)
+
+        for chunk_id in chunk_ids:
+            # Update forward index
+            self.subscriptions[websocket].add(chunk_id)
+            # Update reverse index
+            if chunk_id not in self.chunk_subscribers:
+                self.chunk_subscribers[chunk_id] = set()
+            self.chunk_subscribers[chunk_id].add(websocket)
+
         logger.debug(
             f"Client subscribed to chunks: {chunk_ids}. Total: {len(self.subscriptions[websocket])}"
         )
 
     def unsubscribe(self, websocket: WebSocket, chunk_ids: list[str]):
         """Unsubscribe a connection from specific chunks."""
-        if websocket in self.subscriptions:
-            self.subscriptions[websocket] -= set(chunk_ids)
-            logger.debug(
-                f"Client unsubscribed from chunks: {chunk_ids}. Remaining: {len(self.subscriptions[websocket])}"
-            )
+        if websocket not in self.subscriptions:
+            return
+
+        for chunk_id in chunk_ids:
+            # Update forward index
+            self.subscriptions[websocket].discard(chunk_id)
+            # Update reverse index
+            if chunk_id in self.chunk_subscribers:
+                self.chunk_subscribers[chunk_id].discard(websocket)
+                if not self.chunk_subscribers[chunk_id]:
+                    del self.chunk_subscribers[chunk_id]
+
+        logger.debug(
+            f"Client unsubscribed from chunks: {chunk_ids}. Remaining: {len(self.subscriptions[websocket])}"
+        )
+
+    async def _flush_batch(self):
+        """Flush all pending batched messages."""
+        async with self._batch_lock:
+            if not self._pending_messages:
+                return
+
+            # Swap out pending messages
+            messages_to_send = self._pending_messages
+            self._pending_messages = {}
+            self._batch_task = None
+
+        disconnected = set()
+
+        for chunk_id, messages in messages_to_send.items():
+            # Use reverse index for O(1) subscriber lookup
+            subscribers = self.chunk_subscribers.get(chunk_id, set())
+
+            # Prepare batched message if multiple updates
+            if len(messages) == 1:
+                payload = messages[0]
+            else:
+                # Batch multiple messages into one
+                payload = {
+                    "type": "tile_updates_batch",
+                    "updates": messages,
+                }
+
+            for websocket in list(subscribers):
+                if websocket in disconnected:
+                    continue
+                try:
+                    await websocket.send_json(payload)
+                except Exception as e:
+                    logger.warning(f"Failed to send to client: {e}")
+                    disconnected.add(websocket)
+
+        # Clean up disconnected clients
+        for websocket in disconnected:
+            self.disconnect(websocket)
+
+    async def _schedule_batch_flush(self):
+        """Schedule a batch flush after the batch window."""
+        await asyncio.sleep(BATCH_WINDOW_MS / 1000)
+        await self._flush_batch()
 
     async def broadcast_to_chunk(self, chunk_id: str, message: dict):
-        """Send a message only to clients subscribed to the specified chunk."""
+        """
+        Queue a message for clients subscribed to the specified chunk.
+        Messages are batched within a short window to reduce network overhead.
+        """
+        async with self._batch_lock:
+            # Add to pending messages
+            if chunk_id not in self._pending_messages:
+                self._pending_messages[chunk_id] = []
+            self._pending_messages[chunk_id].append(message)
+
+            # Check if we should flush immediately (max batch size reached)
+            if len(self._pending_messages[chunk_id]) >= MAX_BATCH_SIZE:
+                # Flush immediately for this chunk
+                pass  # Will be flushed below
+            elif self._batch_task is None:
+                # Schedule a flush after the batch window
+                self._batch_task = asyncio.create_task(self._schedule_batch_flush())
+                return
+            else:
+                # Batch task already scheduled
+                return
+
+        # Flush if max batch size reached
+        await self._flush_batch()
+
+    async def broadcast_to_chunk_immediate(self, chunk_id: str, message: dict):
+        """
+        Send a message immediately without batching.
+        Use for time-sensitive messages.
+        """
         disconnected = []
         sent_count = 0
 
-        for websocket, chunks in list(self.subscriptions.items()):
-            if chunk_id in chunks:
-                try:
-                    await websocket.send_json(message)
-                    sent_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to send to client: {e}")
-                    disconnected.append(websocket)
+        # Use reverse index for O(1) subscriber lookup
+        subscribers = self.chunk_subscribers.get(chunk_id, set())
+
+        for websocket in list(subscribers):
+            try:
+                await websocket.send_json(message)
+                sent_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to send to client: {e}")
+                disconnected.append(websocket)
 
         # Clean up disconnected clients
         for websocket in disconnected:
@@ -73,7 +196,7 @@ class ConnectionManager:
         """Send a message to all connected clients (for global messages)."""
         disconnected = []
 
-        for connection in self.active_connections:
+        for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
             except Exception as e:
