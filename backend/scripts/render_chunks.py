@@ -260,8 +260,7 @@ async def render_overview() -> None:
         await storage.save_mosaic_overview(overview_data)
 
         elapsed = time.time() - start_time
-        overview_path = storage.get_mosaic_overview_path()
-        size_kb = overview_path.stat().st_size / 1024
+        size_kb = len(overview_data) / 1024
 
         print(f"Overview rendered: {size_kb:.0f} KB in {elapsed:.1f}s")
 

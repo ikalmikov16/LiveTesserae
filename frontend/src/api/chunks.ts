@@ -7,7 +7,7 @@
  * - Version information for cache busting
  */
 
-import { API_BASE_URL } from "../config";
+import { API_BASE_URL, CDN_BASE_URL } from "../config";
 
 export interface ChunkVersion {
   cx: number;
@@ -22,9 +22,13 @@ export interface OverviewVersion {
 
 /**
  * Get the URL for a chunk image with optional version for cache busting.
+ * Uses CDN if configured, otherwise falls back to API.
  */
 export function getChunkImageUrl(cx: number, cy: number, version?: number): string {
   const versionParam = version ? `?v=${version}` : "";
+  if (CDN_BASE_URL) {
+    return `${CDN_BASE_URL}/${cx}_${cy}.webp${versionParam}`;
+  }
   return `${API_BASE_URL}/api/chunks/${cx}/${cy}${versionParam}`;
 }
 
@@ -41,9 +45,13 @@ export async function getChunkVersion(cx: number, cy: number): Promise<ChunkVers
 
 /**
  * Get the URL for the mosaic overview image with optional version.
+ * Uses CDN if configured, otherwise falls back to API.
  */
 export function getMosaicOverviewUrl(version?: number): string {
   const versionParam = version ? `?v=${version}` : "";
+  if (CDN_BASE_URL) {
+    return `${CDN_BASE_URL}/mosaic_overview.webp${versionParam}`;
+  }
   return `${API_BASE_URL}/api/chunks/overview${versionParam}`;
 }
 

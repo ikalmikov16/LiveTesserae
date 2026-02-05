@@ -1,13 +1,25 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { WS_BASE_URL } from "../config";
-import type { TileUpdateMessage, WebSocketServerMessage } from "../types";
+import type {
+  TileUpdateMessage,
+  ChunkUpdatedMessage,
+  OverviewUpdatedMessage,
+  WebSocketServerMessage,
+} from "../types";
 
 interface UseWebSocketOptions {
   onTileUpdate: (message: TileUpdateMessage) => void;
+  onChunkUpdate?: (message: ChunkUpdatedMessage) => void;
+  onOverviewUpdate?: (message: OverviewUpdatedMessage) => void;
   reconnectDelay?: number;
 }
 
-export function useWebSocket({ onTileUpdate, reconnectDelay = 2000 }: UseWebSocketOptions) {
+export function useWebSocket({
+  onTileUpdate,
+  onChunkUpdate,
+  onOverviewUpdate,
+  reconnectDelay = 2000,
+}: UseWebSocketOptions) {
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
@@ -16,11 +28,15 @@ export function useWebSocket({ onTileUpdate, reconnectDelay = 2000 }: UseWebSock
   const hasConnectedRef = useRef(false);
   // Use ref to avoid stale closure issues with the callback
   const onTileUpdateRef = useRef(onTileUpdate);
+  const onChunkUpdateRef = useRef(onChunkUpdate);
+  const onOverviewUpdateRef = useRef(onOverviewUpdate);
 
-  // Update ref in effect to avoid setting during render
+  // Update refs in effect to avoid setting during render
   useEffect(() => {
     onTileUpdateRef.current = onTileUpdate;
-  }, [onTileUpdate]);
+    onChunkUpdateRef.current = onChunkUpdate;
+    onOverviewUpdateRef.current = onOverviewUpdate;
+  }, [onTileUpdate, onChunkUpdate, onOverviewUpdate]);
 
   // Subscribe to chunks
   const subscribe = useCallback((chunks: string[]) => {
@@ -120,6 +136,12 @@ export function useWebSocket({ onTileUpdate, reconnectDelay = 2000 }: UseWebSock
             for (const update of message.updates) {
               onTileUpdateRef.current(update);
             }
+          } else if (message.type === "chunk_updated") {
+            // Chunk image updated - notify for re-fetch
+            onChunkUpdateRef.current?.(message);
+          } else if (message.type === "overview_updated") {
+            // Overview image updated - notify for re-fetch
+            onOverviewUpdateRef.current?.(message);
           }
         } catch (error) {
           console.error("Failed to parse WebSocket message:", error);

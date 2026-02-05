@@ -27,6 +27,20 @@ export interface TileUpdatesBatchMessage {
   updates: TileUpdateMessage[];
 }
 
+// Chunk image updated (Level 1) - re-fetch chunk from CDN
+export interface ChunkUpdatedMessage {
+  type: "chunk_updated";
+  cx: number;
+  cy: number;
+  version: number;
+}
+
+// Overview image updated (Level 0) - re-fetch overview from CDN
+export interface OverviewUpdatedMessage {
+  type: "overview_updated";
+  version: number;
+}
+
 // WebSocket message types (client -> server)
 export interface SubscribeMessage {
   type: "subscribe";
@@ -39,7 +53,11 @@ export interface UnsubscribeMessage {
 }
 
 // Union of all server->client messages
-export type WebSocketServerMessage = TileUpdateMessage | TileUpdatesBatchMessage;
+export type WebSocketServerMessage =
+  | TileUpdateMessage
+  | TileUpdatesBatchMessage
+  | ChunkUpdatedMessage
+  | OverviewUpdatedMessage;
 
 // Union of all client->server messages
 export type WebSocketClientMessage = SubscribeMessage | UnsubscribeMessage;

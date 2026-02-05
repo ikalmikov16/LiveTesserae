@@ -135,16 +135,17 @@ Pre-render zoom levels for performance using a 3-level pyramid.
 
 ---
 
-## Step 11: AWS Infrastructure
+## Step 11: AWS Infrastructure ✅
 
 Set up cloud deployment.
 
-- [ ] Create S3 bucket for tile/chunk storage
-- [ ] Create RDS PostgreSQL instance
-- [ ] Refactor storage service to use S3
-- [ ] Create CloudFront distribution
-- [ ] Test locally with S3 (AWS credentials)
-- [ ] Update environment config
+- [x] Create S3 bucket for tile/chunk storage
+- [x] Create RDS PostgreSQL instance
+- [x] Refactor storage service to use S3
+- [x] Create CloudFront distribution (with query string caching for versioned assets)
+- [x] Test locally with S3 (AWS credentials)
+- [x] Update environment config
+- [x] Add WebSocket notifications for chunk/overview updates
 
 ---
 

@@ -6,6 +6,7 @@ from app.config import settings
 from app.services.database import db
 from app.services import storage
 from app.services import chunk_renderer
+from app.websocket.manager import manager
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +49,34 @@ async def _update_chunk_and_overview(
         )
         chunk_version = await storage.save_chunk_image(cx, cy, chunk_image_data)
 
+        # Broadcast chunk version update to subscribers
+        chunk_id = f"{cx}:{cy}"
+        await manager.broadcast_to_chunk(
+            chunk_id,
+            {
+                "type": "chunk_updated",
+                "cx": cx,
+                "cy": cy,
+                "version": chunk_version,
+            },
+        )
+
         # Update the overview (Level 0)
         overview_image_data = await chunk_renderer.update_overview_chunk(
             cx, cy, chunk_image_data
         )
-        await storage.save_mosaic_overview(overview_image_data)
+        overview_version = await storage.save_mosaic_overview(overview_image_data)
+
+        # Broadcast overview update to ALL connected clients
+        await manager.broadcast(
+            {
+                "type": "overview_updated",
+                "version": overview_version,
+            }
+        )
 
         logger.debug(
-            f"Background: Updated chunk ({cx}, {cy}) v{chunk_version} and overview"
+            f"Background: Updated chunk ({cx}, {cy}) v{chunk_version} and overview v{overview_version}"
         )
 
     except Exception as e:

@@ -1,0 +1,9 @@
+# Ignore sensitive environment files
+.env
+**/.env
+*.env.local
+
+# Ignore credentials
+*.pem
+*.key
+credentials.json

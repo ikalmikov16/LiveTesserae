@@ -8,7 +8,13 @@ import { useWebSocket } from "./hooks/useWebSocket";
 import { getVisibleChunks, diffChunkSubscriptions } from "./utils/chunks";
 import { base64ToUint8Array } from "./utils/pixels";
 import { MOSAIC_CONFIG } from "./config";
-import type { TileCoordinates, TileUpdateMessage, TileWithPixels } from "./types";
+import type {
+  TileCoordinates,
+  TileUpdateMessage,
+  TileWithPixels,
+  ChunkUpdatedMessage,
+  OverviewUpdatedMessage,
+} from "./types";
 
 const { TILE_SIZE } = MOSAIC_CONFIG;
 
@@ -23,6 +29,10 @@ function App() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [tileUpdate, setTileUpdate] = useState<TileWithPixels | null>(null);
   const [tilePreview, setTilePreview] = useState<TilePreview | null>(null);
+
+  // Chunk and overview update state (from WebSocket)
+  const [chunkUpdate, setChunkUpdate] = useState<ChunkUpdatedMessage | null>(null);
+  const [overviewUpdate, setOverviewUpdate] = useState<OverviewUpdatedMessage | null>(null);
 
   // Shared state for MiniMap
   const [overviewImage, setOverviewImage] = useState<HTMLImageElement | null>(null);
@@ -47,9 +57,23 @@ function App() {
     });
   }, []);
 
+  // Handle chunk image updates from WebSocket (Level 1 re-rendered)
+  const handleChunkUpdate = useCallback((message: ChunkUpdatedMessage) => {
+    console.log(`WebSocket: Chunk updated (${message.cx}, ${message.cy}) v${message.version}`);
+    setChunkUpdate(message);
+  }, []);
+
+  // Handle overview image updates from WebSocket (Level 0 re-rendered)
+  const handleOverviewUpdate = useCallback((message: OverviewUpdatedMessage) => {
+    console.log(`WebSocket: Overview updated v${message.version}`);
+    setOverviewUpdate(message);
+  }, []);
+
   // Connect to WebSocket
   const { isConnected, subscribe, unsubscribe } = useWebSocket({
     onTileUpdate: handleWebSocketTileUpdate,
+    onChunkUpdate: handleChunkUpdate,
+    onOverviewUpdate: handleOverviewUpdate,
   });
 
   // Handle viewport changes - update minimap immediately, debounce subscriptions
@@ -167,12 +191,26 @@ function App() {
     setTileUpdate(null);
   }, []);
 
+  // Clear chunkUpdate after MosaicCanvas processes it
+  const handleChunkUpdateProcessed = useCallback(() => {
+    setChunkUpdate(null);
+  }, []);
+
+  // Clear overviewUpdate after MosaicCanvas processes it
+  const handleOverviewUpdateProcessed = useCallback(() => {
+    setOverviewUpdate(null);
+  }, []);
+
   return (
     <>
       <MosaicCanvas
         onTileClick={handleTileClick}
         tileUpdate={tileUpdate}
         onTileUpdateProcessed={handleTileUpdateProcessed}
+        chunkUpdate={chunkUpdate}
+        onChunkUpdateProcessed={handleChunkUpdateProcessed}
+        overviewUpdate={overviewUpdate}
+        onOverviewUpdateProcessed={handleOverviewUpdateProcessed}
         onViewportChange={handleViewportChange}
         onOverviewLoad={handleOverviewLoad}
         navigateTo={navigateTo}

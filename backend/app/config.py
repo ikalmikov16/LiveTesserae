@@ -19,10 +19,19 @@ class Settings(BaseSettings):
     tile_size: int = 32
     chunk_size: int = 100  # 100x100 tiles per chunk
 
-    # Storage (local for MVP, S3 later)
+    # Storage mode: "local" or "s3"
+    storage_mode: str = "local"
+
+    # Local storage paths (used when storage_mode="local")
     storage_path: str = "storage"
     tiles_path: str = "storage/tiles"
     chunks_path: str = "storage/chunks"
+
+    # S3 configuration (used when storage_mode="s3")
+    aws_s3_bucket: str = ""
+    aws_region: str = "us-east-2"
+    aws_access_key_id: str = ""  # Optional, uses default credential chain if empty
+    aws_secret_access_key: str = ""  # Optional
 
     class Config:
         env_file = ".env"

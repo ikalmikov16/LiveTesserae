@@ -11,7 +11,12 @@ import { tileLoader, TILE_CANCELLED } from "../utils/tileLoader";
 import { rgbToImageData } from "../utils/pixels";
 import { LRUCache } from "../utils/lruCache";
 import { ZoomControls } from "./ZoomControls";
-import type { TileCoordinates, TileWithPixels } from "../types";
+import type {
+  TileCoordinates,
+  TileWithPixels,
+  ChunkUpdatedMessage,
+  OverviewUpdatedMessage,
+} from "../types";
 
 const { TILE_SIZE, GRID_WIDTH, GRID_HEIGHT, CHUNK_SIZE } = MOSAIC_CONFIG;
 const MOSAIC_WIDTH = GRID_WIDTH * TILE_SIZE;
@@ -44,6 +49,10 @@ interface MosaicCanvasProps {
   onTileClick?: (coords: TileCoordinates) => void;
   tileUpdate?: TileWithPixels | null;
   onTileUpdateProcessed?: () => void;
+  chunkUpdate?: ChunkUpdatedMessage | null;
+  onChunkUpdateProcessed?: () => void;
+  overviewUpdate?: OverviewUpdatedMessage | null;
+  onOverviewUpdateProcessed?: () => void;
   onViewportChange?: (offsetX: number, offsetY: number, zoom: number) => void;
   onOverviewLoad?: (image: HTMLImageElement) => void;
   navigateTo?: { x: number; y: number } | null;
@@ -55,6 +64,10 @@ export function MosaicCanvas({
   onTileClick,
   tileUpdate,
   onTileUpdateProcessed,
+  chunkUpdate,
+  onChunkUpdateProcessed,
+  overviewUpdate,
+  onOverviewUpdateProcessed,
   onViewportChange,
   onOverviewLoad,
   navigateTo,
@@ -443,59 +456,68 @@ export function MosaicCanvas({
     };
   }, [selectedTile]);
 
-  // Process tile updates (from WebSocket or local saves)
+  // Process tile updates (from WebSocket or local saves) - Level 2 pixel data only
   useEffect(() => {
     if (!tileUpdate) return;
 
     const key = getTileKey(tileUpdate.x, tileUpdate.y);
 
-    // Calculate affected chunk
-    const cx = Math.floor(tileUpdate.x / CHUNK_SIZE);
-    const cy = Math.floor(tileUpdate.y / CHUNK_SIZE);
-    const chunkKey = `${cx}_${cy}`;
-
     // Clear non-existent flag in case tile was previously 404
     nonExistentTilesRef.current.delete(key);
 
-    // Handle tile pixel data for Level 2
+    // Handle tile pixel data for Level 2 (instant, no need to wait for backend)
     if (tileUpdate.pixelData) {
       tileDataRef.current.set(key, tileUpdate.pixelData!);
       setTileDataVersion((n) => n + 1); // Trigger re-render
       onTileUpdateProcessed?.();
     }
+    // Chunk and overview updates are handled separately via WebSocket messages
+  }, [tileUpdate, onTileUpdateProcessed]);
 
-    // Reload chunk for Level 1 after a delay
-    // Backend updates chunks asynchronously, so we wait for it to finish
-    const reloadChunk = async () => {
-      // Wait for backend to finish rendering (async background task)
-      // Local saves need more time since the broadcast happens before render completes
-      await new Promise((resolve) => setTimeout(resolve, 500));
+  // Process chunk updates (from WebSocket) - Level 1 chunk images
+  useEffect(() => {
+    if (!chunkUpdate) return;
+
+    const { cx, cy, version } = chunkUpdate;
+    const chunkKey = `${cx}_${cy}`;
+
+    // Load the updated chunk image
+    const loadUpdatedChunk = async () => {
       try {
-        const versionInfo = await getChunkVersion(cx, cy);
-        const img = await loadChunkImage(cx, cy, versionInfo.version);
-        chunkCacheRef.current.set(chunkKey, { image: img, version: versionInfo.version });
+        const img = await loadChunkImage(cx, cy, version);
+        chunkCacheRef.current.set(chunkKey, { image: img, version });
         setChunkCacheVersion((n) => n + 1);
+        console.log(`Chunk (${cx}, ${cy}) reloaded with version ${version}`);
       } catch (error) {
         console.error(`Failed to reload chunk ${chunkKey}:`, error);
+      } finally {
+        onChunkUpdateProcessed?.();
       }
     };
-    reloadChunk();
+    loadUpdatedChunk();
+  }, [chunkUpdate, onChunkUpdateProcessed]);
 
-    // Reload overview for Level 0 after a delay
-    const reloadOverview = async () => {
-      // Wait for backend to finish rendering (async background task)
-      await new Promise((resolve) => setTimeout(resolve, 600));
+  // Process overview updates (from WebSocket) - Level 0 overview image
+  useEffect(() => {
+    if (!overviewUpdate) return;
+
+    const { version } = overviewUpdate;
+
+    // Load the updated overview image
+    const loadUpdatedOverview = async () => {
       try {
-        const versionInfo = await getOverviewVersion();
-        const img = await loadOverviewImage(versionInfo.version);
+        const img = await loadOverviewImage(version);
         setMosaicOverview(img);
         onOverviewLoad?.(img);
+        console.log(`Overview reloaded with version ${version}`);
       } catch (error) {
         console.error("Failed to reload overview:", error);
+      } finally {
+        onOverviewUpdateProcessed?.();
       }
     };
-    reloadOverview();
-  }, [tileUpdate, onTileUpdateProcessed, onOverviewLoad]);
+    loadUpdatedOverview();
+  }, [overviewUpdate, onOverviewUpdateProcessed, onOverviewLoad]);
 
   // Track if canvas has been initialized
   const [isCanvasReady, setIsCanvasReady] = useState(false);
