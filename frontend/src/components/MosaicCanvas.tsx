@@ -137,7 +137,7 @@ export function MosaicCanvas({
 
   // Multi-level rendering state
   const [mosaicOverview, setMosaicOverview] = useState<HTMLImageElement | null>(null);
-  const [overviewLoading, setOverviewLoading] = useState(false);
+  const overviewLoadedRef = useRef(false); // Track if overview load has been attempted
   // Use LRU cache for chunk images to prevent unbounded memory growth
   const chunkCacheRef = useRef(new LRUCache<string, ChunkCache>(MAX_CHUNK_CACHE_SIZE));
   const loadingChunksRef = useRef<Set<string>>(new Set());
@@ -526,11 +526,10 @@ export function MosaicCanvas({
   const rafIdRef = useRef<number | null>(null);
   const pendingDrawRef = useRef(false);
 
-  // Load overview on mount (for initial page load)
+  // Load overview once on mount (for initial page load)
   useEffect(() => {
-    if (overviewLoading || mosaicOverview) return;
-
-    setOverviewLoading(true);
+    if (overviewLoadedRef.current) return;
+    overviewLoadedRef.current = true;
 
     const loadOverview = async () => {
       try {
@@ -540,13 +539,12 @@ export function MosaicCanvas({
         onOverviewLoad?.(img);
       } catch (error) {
         console.error("Failed to load overview:", error);
-      } finally {
-        setOverviewLoading(false);
       }
     };
 
     loadOverview();
-  }, [overviewLoading, mosaicOverview, onOverviewLoad]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally runs once on mount
+  }, []);
 
   // Load missing or outdated chunks when at Level 1 or Level 2 (used as fallback preview)
   // Debounced to prevent excessive requests during fast panning

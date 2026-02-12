@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     debug: bool = True
     log_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR
 
+    # CORS: comma-separated allowed origins
+    cors_origins: str = "http://localhost:5173"
+
     # Mosaic configuration
     grid_width: int = 1000
     grid_height: int = 1000

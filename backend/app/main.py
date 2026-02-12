@@ -48,10 +48,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS for local development
+# Configure CORS - origins from environment variable (comma-separated)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite default port
+    allow_origins=[origin.strip() for origin in settings.cors_origins.split(",")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

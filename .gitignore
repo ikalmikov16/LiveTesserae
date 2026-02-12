@@ -41,7 +41,10 @@ logs/
 .env.local
 .env.*.local
 !.env.example
+!.env.deploy.example
 backend/.env
+backend/.env.deploy
+frontend/.env.deploy
 
 # Build outputs
 frontend/dist/
