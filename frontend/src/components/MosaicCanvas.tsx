@@ -863,7 +863,6 @@ export function MosaicCanvas({
     }
   };
 
-  // Zoom controls
   return (
     <>
       <canvas
@@ -871,6 +870,8 @@ export function MosaicCanvas({
         onMouseDown={handleMouseDown}
         onClick={handleClick}
         style={{ cursor: isDragging ? "grabbing" : "grab" }}
+        role="application"
+        aria-label="Mosaic editor canvas"
       />
       <ZoomControls
         zoom={zoom}

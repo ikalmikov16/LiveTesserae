@@ -24,8 +24,11 @@ export function useWebSocket({
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
-  // Track if we ever successfully connected (to avoid noise from StrictMode)
+  // Track if we ever successfully connected (to suppress noisy logs on first failure)
   const hasConnectedRef = useRef(false);
+  const retriesRef = useRef(0);
+  const MAX_RETRIES = 15;
+  const MAX_BACKOFF = 30000;
   // Use ref to avoid stale closure issues with the callback
   const onTileUpdateRef = useRef(onTileUpdate);
   const onChunkUpdateRef = useRef(onChunkUpdate);
@@ -92,34 +95,50 @@ export function useWebSocket({
           return;
         }
         hasConnectedRef.current = true;
+        retriesRef.current = 0;
         console.log("WebSocket connected");
         setIsConnected(true);
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event: CloseEvent) => {
         if (!mountedRef.current) return;
 
-        // Only log if we had successfully connected before
         if (hasConnectedRef.current) {
           console.log("WebSocket disconnected");
         }
         setIsConnected(false);
         wsRef.current = null;
 
-        // Schedule reconnection only if still mounted and had connected before
-        if (hasConnectedRef.current) {
+        // Server at capacity — back off significantly instead of hammering retries
+        if (event.code === 1013) {
+          console.warn("WebSocket: server at capacity, retrying in 30s");
           reconnectTimeoutRef.current = window.setTimeout(() => {
-            if (mountedRef.current) {
-              console.log("Attempting to reconnect...");
-              connect();
-            }
-          }, reconnectDelay);
+            if (mountedRef.current) connect();
+          }, 30000);
+          return;
         }
+
+        if (retriesRef.current >= MAX_RETRIES) {
+          console.warn("WebSocket: max retries reached, giving up");
+          return;
+        }
+
+        // Exponential backoff: reconnectDelay * 2^retries, capped at MAX_BACKOFF
+        const delay = Math.min(reconnectDelay * Math.pow(2, retriesRef.current), MAX_BACKOFF);
+        retriesRef.current++;
+
+        reconnectTimeoutRef.current = window.setTimeout(() => {
+          if (mountedRef.current) {
+            if (hasConnectedRef.current) {
+              console.log("Attempting to reconnect...");
+            }
+            connect();
+          }
+        }, delay);
       };
 
       ws.onerror = () => {
-        // Silently ignore errors - they're usually followed by onclose
-        // and we don't want noise from StrictMode double-invoking effects
+        // Errors are followed by onclose which handles reconnection
       };
 
       ws.onmessage = (event) => {

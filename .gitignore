@@ -5,14 +5,15 @@ __pycache__/
 *.so
 .Python
 backend/venv/
-.env
 *.egg-info/
 dist/
 build/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Node/Bun
 node_modules/
-frontend/node_modules/
 .bun
 *.tsbuildinfo
 
@@ -26,11 +27,9 @@ frontend/node_modules/
 .DS_Store
 Thumbs.db
 
-# Local storage (for development - generated images, DO NOT COMMIT)
-backend/storage/tiles/*
-backend/storage/chunks/*
-!backend/storage/tiles/.gitkeep
-!backend/storage/chunks/.gitkeep
+# Local storage (generated at runtime, not for version control)
+storage/
+backend/storage/
 
 # Logs
 *.log
@@ -40,14 +39,12 @@ logs/
 .env
 .env.local
 .env.*.local
+.env.deploy
 !.env.example
 !.env.deploy.example
-backend/.env
-backend/.env.deploy
-frontend/.env.deploy
 
 # Build outputs
 frontend/dist/
 
-# Cursor
-.cursor/plans/
+# Cursor (editor-specific, plans are internal)
+.cursor/

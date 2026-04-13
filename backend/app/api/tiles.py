@@ -1,11 +1,13 @@
 import base64
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException, Path, Request, Response
 
 from app.config import settings
 from app.models.tile import TileDeleteResponse, TileResponse, TileSaveResponse
 from app.services import tiles as tile_service
+from app.utils import get_client_ip
 from app.websocket import manager
 
 logger = logging.getLogger(__name__)
@@ -14,6 +16,29 @@ router = APIRouter()
 
 # RGB pixel data size: 32×32 pixels × 3 bytes (RGB) = 3072 bytes
 RGB_DATA_SIZE = 32 * 32 * 3
+
+# In-memory rate limit store: IP -> list of request timestamps
+_rate_limit_store: dict[str, list[float]] = {}
+
+
+def _check_rate_limit(request: Request) -> None:
+    """Enforce per-IP rate limiting on tile saves."""
+    if settings.rate_limit_tile_save <= 0:
+        return
+
+    client_ip = get_client_ip(request)
+    now = time.monotonic()
+    window = settings.rate_limit_window_seconds
+
+    timestamps = _rate_limit_store.get(client_ip, [])
+    timestamps = [t for t in timestamps if now - t < window]
+
+    if len(timestamps) >= settings.rate_limit_tile_save:
+        _rate_limit_store[client_ip] = timestamps
+        raise HTTPException(429, "Rate limit exceeded. Try again shortly.")
+
+    timestamps.append(now)
+    _rate_limit_store[client_ip] = timestamps
 
 
 def validate_coordinates(x: int, y: int) -> None:
@@ -111,15 +136,32 @@ async def save_tile(
     Accepts raw RGB bytes (3072 bytes = 32×32×3, row-major order).
     """
     validate_coordinates(x, y)
+    _check_rate_limit(request)
 
-    pixel_data = await request.body()
+    # Streaming body read with size limit
+    MAX_BODY_SIZE = 4096
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_BODY_SIZE:
+                raise HTTPException(413, "Request body too large")
+        except ValueError:
+            raise HTTPException(400, "Invalid Content-Length header")
+
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_BODY_SIZE:
+            raise HTTPException(413, "Request body too large")
+    pixel_data = bytes(body)
 
     if not pixel_data:
         raise HTTPException(status_code=400, detail="No pixel data provided")
 
     validate_pixel_data(pixel_data)
 
-    result = await tile_service.save_tile(x, y, pixel_data)
+    session_id = request.headers.get("X-Session-Id")
+    result = await tile_service.save_tile(x, y, pixel_data, session_id=session_id)
 
     # Broadcast update to WebSocket subscribers
     chunk_id = tile_service.calculate_chunk_id(x, y)

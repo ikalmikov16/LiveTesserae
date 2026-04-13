@@ -6,12 +6,16 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql://tesserae:tesserae_local@localhost:5433/tesserae"
+    db_pool_min: int = 5
+    db_pool_max: int = 20
+    db_command_timeout: float = 10.0  # seconds before a query is killed
 
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
     debug: bool = True
     log_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR
+    log_format: str = "text"  # "text" for dev, "json" for production
 
     # CORS: comma-separated allowed origins
     cors_origins: str = "http://localhost:5173"
@@ -29,6 +33,16 @@ class Settings(BaseSettings):
     storage_path: str = "storage"
     tiles_path: str = "storage/tiles"
     chunks_path: str = "storage/chunks"
+
+    # Rate limiting
+    rate_limit_tile_save: int = 10  # max saves per window per IP
+    rate_limit_window_seconds: int = 1  # sliding window duration
+
+    # WebSocket limits
+    ws_max_connections: int = 1000  # global cap
+    ws_max_connections_per_ip: int = 10  # per-IP cap
+    ws_max_subscriptions: int = 50  # max chunks per connection
+    ws_max_message_size: int = 4096  # max bytes for incoming WS messages
 
     # S3 configuration (used when storage_mode="s3")
     aws_s3_bucket: str = ""

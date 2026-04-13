@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "../config";
+import { getSessionId } from "../utils/session";
 
 /**
  * Save tile pixel data to the backend.
@@ -18,8 +19,13 @@ export async function saveTile(
     body: buffer,
     headers: {
       "Content-Type": "application/octet-stream",
+      "X-Session-Id": getSessionId(),
     },
   });
+
+  if (response.status === 429) {
+    throw new Error("You're painting too fast! Wait a moment and try again.");
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: "Unknown error" }));

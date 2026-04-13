@@ -258,6 +258,7 @@ export function MiniMap({
         className="minimap minimap--collapsed glass-panel"
         onClick={() => setCollapsed(false)}
         title="Show map"
+        aria-label="Show map"
       >
         <Map size={18} />
       </button>
@@ -268,7 +269,12 @@ export function MiniMap({
     <div className="minimap glass-panel">
       <div className="minimap__header">
         <span className="minimap__title">Map</span>
-        <button className="minimap__toggle" onClick={() => setCollapsed(true)} title="Hide map">
+        <button
+          className="minimap__toggle"
+          onClick={() => setCollapsed(true)}
+          title="Hide map"
+          aria-label="Hide map"
+        >
           <ChevronDown size={16} />
         </button>
       </div>
@@ -316,7 +322,12 @@ export function MiniMap({
           }}
           maxLength={3}
         />
-        <button type="submit" className="minimap__goto-btn" title="Go to tile">
+        <button
+          type="submit"
+          className="minimap__goto-btn"
+          title="Go to tile"
+          aria-label="Go to tile"
+        >
           <Search size={14} />
         </button>
       </form>

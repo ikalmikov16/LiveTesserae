@@ -1,3 +1,5 @@
+import asyncio
+import json as json_mod
 import logging
 from contextlib import asynccontextmanager
 
@@ -10,11 +12,37 @@ from app.services.database import db
 from app.services.storage import ensure_storage_directories
 from app.websocket import router as ws_router
 
+
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        return json_mod.dumps(
+            {
+                "ts": self.formatTime(record),
+                "level": record.levelname,
+                "logger": record.name,
+                "msg": record.getMessage(),
+                **(
+                    {"exc": self.formatException(record.exc_info)}
+                    if record.exc_info
+                    else {}
+                ),
+            }
+        )
+
+
 # Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+_log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
+_handler = logging.StreamHandler()
+if settings.log_format == "json":
+    _handler.setFormatter(JSONFormatter())
+else:
+    _handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+_root = logging.getLogger()
+_root.setLevel(_log_level)
+_root.addHandler(_handler)
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +65,21 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down Live Tesserae API...")
+
+    from app.services.tiles import _background_tasks
+
+    if _background_tasks:
+        logger.info(f"Draining {len(_background_tasks)} background tasks...")
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*list(_background_tasks), return_exceptions=True),
+                timeout=10.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Background task drain timed out after 10s, proceeding with shutdown"
+            )
+
     await db.disconnect()
     logger.info("Live Tesserae API shutdown complete")
 
@@ -79,7 +122,7 @@ async def health():
                 db_status = "connected"
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
-        db_status = f"error: {str(e)}"
+        db_status = "error"
 
     return {
         "status": "ok",

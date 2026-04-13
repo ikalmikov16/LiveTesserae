@@ -54,7 +54,12 @@ export function ZoomControls({
 
   return (
     <div className="zoom-controls glass-panel">
-      <button className="zoom-controls__btn" onClick={handleZoomIn} title="Zoom in">
+      <button
+        className="zoom-controls__btn"
+        onClick={handleZoomIn}
+        title="Zoom in"
+        aria-label="Zoom in"
+      >
         <ZoomIn size={18} />
       </button>
 
@@ -73,7 +78,12 @@ export function ZoomControls({
         <Slider.Thumb className="zoom-controls__thumb" aria-label="Zoom level" />
       </Slider.Root>
 
-      <button className="zoom-controls__btn" onClick={handleZoomOut} title="Zoom out">
+      <button
+        className="zoom-controls__btn"
+        onClick={handleZoomOut}
+        title="Zoom out"
+        aria-label="Zoom out"
+      >
         <ZoomOut size={18} />
       </button>
 
@@ -83,6 +93,7 @@ export function ZoomControls({
         className="zoom-controls__btn zoom-controls__btn--reset"
         onClick={onReset}
         title="Fit to screen"
+        aria-label="Fit to screen"
       >
         <Maximize size={16} />
       </button>
@@ -92,6 +103,8 @@ export function ZoomControls({
           className={`zoom-controls__btn zoom-controls__btn--grid ${showGrid ? "zoom-controls__btn--active" : ""}`}
           onClick={onToggleGrid}
           title={`${showGrid ? "Hide" : "Show"} grid (G)`}
+          aria-label={`${showGrid ? "Hide" : "Show"} grid`}
+          aria-pressed={showGrid}
         >
           <Grid3X3 size={16} />
         </button>

@@ -31,3 +31,15 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 -- Index for finding dirty chunks that need re-rendering
 CREATE INDEX IF NOT EXISTS idx_chunks_dirty ON chunks(dirty) WHERE dirty = TRUE;
+
+-- Edit log: append-only log of every tile edit for stats tracking
+-- session_id is a client-generated UUID stored in localStorage (no auth needed)
+CREATE TABLE IF NOT EXISTS edit_log (
+    id BIGSERIAL PRIMARY KEY,
+    tile_id VARCHAR(11) NOT NULL,
+    session_id VARCHAR(36) NOT NULL,
+    edited_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_edit_log_session ON edit_log(session_id);
+CREATE INDEX IF NOT EXISTS idx_edit_log_edited_at ON edit_log(edited_at);

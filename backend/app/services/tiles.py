@@ -120,7 +120,9 @@ async def get_tile_metadata(x: int, y: int) -> dict | None:
     }
 
 
-async def save_tile(x: int, y: int, pixel_data: bytes) -> dict:
+async def save_tile(
+    x: int, y: int, pixel_data: bytes, session_id: str | None = None
+) -> dict:
     """
     Save a tile from raw RGB pixel data.
 
@@ -167,6 +169,17 @@ async def save_tile(x: int, y: int, pixel_data: bytes) -> dict:
                 """,
                 chunk_id,
             )
+
+        # Log the edit for stats (non-critical, don't fail the save if this errors)
+        if session_id:
+            try:
+                await db.execute(
+                    "INSERT INTO edit_log (tile_id, session_id) VALUES ($1, $2)",
+                    tile_id,
+                    session_id,
+                )
+            except Exception as log_err:
+                logger.warning(f"Failed to log edit for {tile_id}: {log_err}")
 
         # Background: update chunk and overview (after transaction commits)
         _schedule_background_task(_update_chunk_and_overview(cx, cy, x, y, pixel_data))

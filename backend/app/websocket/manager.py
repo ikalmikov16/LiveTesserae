@@ -1,7 +1,11 @@
 import asyncio
 import logging
 import time
+
 from fastapi import WebSocket
+
+from app.config import settings
+from app.utils import get_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +37,32 @@ class ConnectionManager:
         self._batch_task: asyncio.Task | None = None
         self._batch_lock = asyncio.Lock()
 
-    async def connect(self, websocket: WebSocket):
-        """Accept a new WebSocket connection."""
+    async def connect(self, websocket: WebSocket) -> bool:
+        """Accept a new WebSocket connection, enforcing limits."""
+        # Must accept() first so close codes are delivered to the client
         await websocket.accept()
+
+        if len(self.active_connections) >= settings.ws_max_connections:
+            await websocket.close(code=1013, reason="Server at capacity")
+            return False
+
+        client_ip = get_client_ip(websocket)
+        ip_count = sum(
+            1
+            for ws in self.active_connections
+            if getattr(ws, "_client_ip", None) == client_ip
+        )
+        if ip_count >= settings.ws_max_connections_per_ip:
+            await websocket.close(code=1013, reason="Too many connections from this IP")
+            return False
+
+        websocket._client_ip = client_ip
         self.active_connections.add(websocket)
         self.subscriptions[websocket] = set()
         logger.info(
-            f"WebSocket connected. Total connections: {len(self.active_connections)}"
+            f"WebSocket connected ({client_ip}). Total: {len(self.active_connections)}"
         )
+        return True
 
     def disconnect(self, websocket: WebSocket):
         """Remove a WebSocket connection and its subscriptions."""
@@ -65,6 +87,14 @@ class ConnectionManager:
         """Subscribe a connection to receive updates for specific chunks."""
         if websocket not in self.subscriptions:
             self.subscriptions[websocket] = set()
+
+        remaining = max(
+            0, settings.ws_max_subscriptions - len(self.subscriptions[websocket])
+        )
+        if len(chunk_ids) > remaining:
+            chunk_ids = chunk_ids[:remaining]
+            if not chunk_ids:
+                return
 
         for chunk_id in chunk_ids:
             # Update forward index

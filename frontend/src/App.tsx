@@ -1,258 +1,48 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { lazy, Suspense } from "react";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { LandingPage } from "./pages/LandingPage";
+import { NotFound } from "./pages/NotFound";
 import "./App.css";
-import { MosaicCanvas } from "./components/MosaicCanvas";
-import { TileEditorPanel } from "./components/TileEditorPanel";
-import { MiniMap } from "./components/MiniMap";
-import { saveTile } from "./api/tiles";
-import { useWebSocket } from "./hooks/useWebSocket";
-import { getVisibleChunks, diffChunkSubscriptions } from "./utils/chunks";
-import { base64ToUint8Array } from "./utils/pixels";
-import { MOSAIC_CONFIG } from "./config";
-import type {
-  TileCoordinates,
-  TileUpdateMessage,
-  TileWithPixels,
-  ChunkUpdatedMessage,
-  OverviewUpdatedMessage,
-} from "./types";
 
-const { TILE_SIZE } = MOSAIC_CONFIG;
+const MosaicEditor = lazy(() =>
+  import("./pages/MosaicEditor").then((m) => ({ default: m.MosaicEditor }))
+);
 
-interface TilePreview {
-  x: number;
-  y: number;
-  pixelData: Uint8Array;
+function LoadingScreen() {
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "var(--color-bg-primary, #0f0f0f)",
+        color: "var(--color-text-secondary, #888)",
+        fontSize: "1rem",
+      }}
+    >
+      Loading editor…
+    </div>
+  );
 }
 
 function App() {
-  const [selectedTile, setSelectedTile] = useState<TileCoordinates | null>(null);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [tileUpdate, setTileUpdate] = useState<TileWithPixels | null>(null);
-  const [tilePreview, setTilePreview] = useState<TilePreview | null>(null);
-
-  // Chunk and overview update state (from WebSocket)
-  const [chunkUpdate, setChunkUpdate] = useState<ChunkUpdatedMessage | null>(null);
-  const [overviewUpdate, setOverviewUpdate] = useState<OverviewUpdatedMessage | null>(null);
-
-  // Shared state for MiniMap
-  const [overviewImage, setOverviewImage] = useState<HTMLImageElement | null>(null);
-  const [viewportState, setViewportState] = useState({ x: 0, y: 0, zoom: 0.02 });
-  const [navigateTo, setNavigateTo] = useState<{ x: number; y: number } | null>(null);
-  const [canvasSize] = useState({ width: window.innerWidth, height: window.innerHeight });
-
-  // Track subscribed chunks with ref to avoid stale closures in callback
-  const subscribedChunksRef = useRef<string[]>([]);
-  const subscriptionTimeoutRef = useRef<number | null>(null);
-
-  // Handle real-time tile updates from WebSocket
-  const handleWebSocketTileUpdate = useCallback((message: TileUpdateMessage) => {
-    console.log(`WebSocket: Tile update received (${message.x}, ${message.y})`);
-
-    const pixelData = base64ToUint8Array(message.pixels);
-
-    setTileUpdate({
-      x: message.x,
-      y: message.y,
-      pixelData,
-    });
-  }, []);
-
-  // Handle chunk image updates from WebSocket (Level 1 re-rendered)
-  const handleChunkUpdate = useCallback((message: ChunkUpdatedMessage) => {
-    console.log(`WebSocket: Chunk updated (${message.cx}, ${message.cy}) v${message.version}`);
-    setChunkUpdate(message);
-  }, []);
-
-  // Handle overview image updates from WebSocket (Level 0 re-rendered)
-  const handleOverviewUpdate = useCallback((message: OverviewUpdatedMessage) => {
-    console.log(`WebSocket: Overview updated v${message.version}`);
-    setOverviewUpdate(message);
-  }, []);
-
-  // Connect to WebSocket
-  const { isConnected, subscribe, unsubscribe } = useWebSocket({
-    onTileUpdate: handleWebSocketTileUpdate,
-    onChunkUpdate: handleChunkUpdate,
-    onOverviewUpdate: handleOverviewUpdate,
-  });
-
-  // Handle viewport changes - update minimap immediately, debounce subscriptions
-  const handleViewportChange = useCallback(
-    (offsetX: number, offsetY: number, zoom: number) => {
-      // Update viewport state for MiniMap (immediate for responsiveness)
-      setViewportState({ x: offsetX, y: offsetY, zoom });
-
-      // Debounce chunk subscription updates to avoid spamming WebSocket
-      if (subscriptionTimeoutRef.current) {
-        clearTimeout(subscriptionTimeoutRef.current);
-      }
-
-      subscriptionTimeoutRef.current = window.setTimeout(() => {
-        if (!isConnected) return;
-
-        // Calculate visible area in world coordinates
-        const visibleWidth = window.innerWidth / zoom;
-        const visibleHeight = window.innerHeight / zoom;
-
-        const newChunks = getVisibleChunks(offsetX, offsetY, visibleWidth, visibleHeight);
-
-        const { subscribe: toSub, unsubscribe: toUnsub } = diffChunkSubscriptions(
-          subscribedChunksRef.current,
-          newChunks
-        );
-
-        if (toSub.length > 0) {
-          subscribe(toSub);
-        }
-        if (toUnsub.length > 0) {
-          unsubscribe(toUnsub);
-        }
-
-        subscribedChunksRef.current = newChunks;
-      }, 150);
-    },
-    [isConnected, subscribe, unsubscribe]
-  );
-
-  // Cleanup subscription timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (subscriptionTimeoutRef.current) {
-        clearTimeout(subscriptionTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  // Handle overview image loaded (for MiniMap)
-  const handleOverviewLoad = useCallback((image: HTMLImageElement) => {
-    setOverviewImage(image);
-  }, []);
-
-  // Handle MiniMap navigation
-  const handleMiniMapNavigate = useCallback((x: number, y: number) => {
-    setNavigateTo({ x, y });
-    // Clear after a tick to allow re-navigation to same coordinates
-    setTimeout(() => setNavigateTo(null), 0);
-  }, []);
-
-  // Handle Go to X,Y from MiniMap - navigate and open editor
-  const handleGoToTile = useCallback((x: number, y: number) => {
-    setSelectedTile({ x, y });
-    setEditorOpen(true);
-  }, []);
-
-  // Handle Pan to Tile button in editor
-  const handlePanToTile = useCallback(() => {
-    if (!selectedTile) return;
-    // Navigate to center the tile on screen
-    const worldX = (selectedTile.x + 0.5) * TILE_SIZE - canvasSize.width / viewportState.zoom / 2;
-    const worldY = (selectedTile.y + 0.5) * TILE_SIZE - canvasSize.height / viewportState.zoom / 2;
-    setNavigateTo({ x: worldX, y: worldY });
-    setTimeout(() => setNavigateTo(null), 0);
-  }, [selectedTile, canvasSize.width, canvasSize.height, viewportState.zoom]);
-
-  // Handle preview change from editor
-  const handlePreviewChange = useCallback(
-    (pixelData: Uint8Array | null) => {
-      if (!selectedTile || !pixelData) {
-        setTilePreview(null);
-        return;
-      }
-      setTilePreview({
-        x: selectedTile.x,
-        y: selectedTile.y,
-        pixelData,
-      });
-    },
-    [selectedTile]
-  );
-
-  const handleTileClick = (coords: TileCoordinates) => {
-    setSelectedTile(coords);
-    setEditorOpen(true);
-  };
-
-  const handleCloseEditor = () => {
-    setEditorOpen(false);
-    setTilePreview(null);
-  };
-
-  const handleSaveTile = useCallback(
-    async (tileX: number, tileY: number, pixelData: Uint8Array) => {
-      await saveTile(tileX, tileY, pixelData);
-      // Note: The tile will appear via WebSocket broadcast
-      // Don't close editor here - let the caller decide
-    },
-    []
-  );
-
-  // Clear tileUpdate after MosaicCanvas processes it
-  const handleTileUpdateProcessed = useCallback(() => {
-    setTileUpdate(null);
-  }, []);
-
-  // Clear chunkUpdate after MosaicCanvas processes it
-  const handleChunkUpdateProcessed = useCallback(() => {
-    setChunkUpdate(null);
-  }, []);
-
-  // Clear overviewUpdate after MosaicCanvas processes it
-  const handleOverviewUpdateProcessed = useCallback(() => {
-    setOverviewUpdate(null);
-  }, []);
-
   return (
-    <>
-      <MosaicCanvas
-        onTileClick={handleTileClick}
-        tileUpdate={tileUpdate}
-        onTileUpdateProcessed={handleTileUpdateProcessed}
-        chunkUpdate={chunkUpdate}
-        onChunkUpdateProcessed={handleChunkUpdateProcessed}
-        overviewUpdate={overviewUpdate}
-        onOverviewUpdateProcessed={handleOverviewUpdateProcessed}
-        onViewportChange={handleViewportChange}
-        onOverviewLoad={handleOverviewLoad}
-        navigateTo={navigateTo}
-        tilePreview={tilePreview}
-        selectedTile={editorOpen ? selectedTile : null}
-      />
-      <MiniMap
-        overviewImage={overviewImage}
-        viewportX={viewportState.x}
-        viewportY={viewportState.y}
-        viewportZoom={viewportState.zoom}
-        canvasWidth={canvasSize.width}
-        canvasHeight={canvasSize.height}
-        onNavigate={handleMiniMapNavigate}
-        editingTile={editorOpen ? selectedTile : null}
-        onGoToTile={handleGoToTile}
-      />
-      <TileEditorPanel
-        isOpen={editorOpen}
-        tile={selectedTile}
-        onClose={handleCloseEditor}
-        onSave={handleSaveTile}
-        onPanToTile={handlePanToTile}
-        onPreviewChange={handlePreviewChange}
-      />
-      {/* Connection status indicator */}
-      <div
-        style={{
-          position: "fixed",
-          bottom: 10,
-          left: 10,
-          padding: "4px 8px",
-          borderRadius: 4,
-          fontSize: 12,
-          backgroundColor: isConnected ? "#22c55e" : "#ef4444",
-          color: "white",
-          zIndex: 100,
-        }}
-      >
-        {isConnected ? "Live" : "Disconnected"}
-      </div>
-    </>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route
+          path="/mosaic"
+          element={
+            <Suspense fallback={<LoadingScreen />}>
+              <MosaicEditor />
+            </Suspense>
+          }
+        />
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </BrowserRouter>
   );
 }
 

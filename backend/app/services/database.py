@@ -17,13 +17,17 @@ class Database:
 
     async def connect(self) -> None:
         """Create the connection pool."""
-        logger.info(f"Connecting to database...")
+        logger.info("Connecting to database...")
         self.pool = await asyncpg.create_pool(
             settings.database_url,
-            min_size=2,
-            max_size=10,
+            min_size=settings.db_pool_min,
+            max_size=settings.db_pool_max,
+            command_timeout=settings.db_command_timeout,
         )
-        logger.info("Database connection pool created")
+        logger.info(
+            f"Database pool created (min={settings.db_pool_min}, "
+            f"max={settings.db_pool_max}, timeout={settings.db_command_timeout}s)"
+        )
 
     async def disconnect(self) -> None:
         """Close the connection pool."""

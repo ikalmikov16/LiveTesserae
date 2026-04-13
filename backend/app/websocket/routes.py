@@ -1,12 +1,32 @@
 import json
 import logging
+import re
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.config import settings
 from app.websocket.manager import manager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+CHUNK_ID_PATTERN = re.compile(r"^\d{1,3}:\d{1,3}$")
+MAX_CHUNKS_PER_MESSAGE = 50
+
+
+def validate_chunk_ids(chunks: list) -> list[str]:
+    """Filter chunk IDs to valid format and grid bounds."""
+    max_cx = settings.grid_width // settings.chunk_size
+    max_cy = settings.grid_height // settings.chunk_size
+    valid = []
+    for cid in chunks[:MAX_CHUNKS_PER_MESSAGE]:
+        if not isinstance(cid, str) or not CHUNK_ID_PATTERN.match(cid):
+            continue
+        cx, cy = cid.split(":")
+        if 0 <= int(cx) < max_cx and 0 <= int(cy) < max_cy:
+            valid.append(cid)
+    return valid
 
 
 @router.websocket("/ws")
@@ -21,25 +41,31 @@ async def websocket_endpoint(websocket: WebSocket):
     - Client sends: {"type": "unsubscribe", "chunks": ["0:0", ...]}
     - Server sends: {"type": "tile_update", "x": 50, "y": 50, "image": "data:..."}
     """
-    await manager.connect(websocket)
+    connected = await manager.connect(websocket)
+    if not connected:
+        return
 
     try:
         while True:
             data = await websocket.receive_text()
+
+            if len(data) > settings.ws_max_message_size:
+                logger.warning(f"Oversized WS message ({len(data)} bytes), ignoring")
+                continue
 
             try:
                 msg = json.loads(data)
                 msg_type = msg.get("type")
 
                 if msg_type == "subscribe":
-                    chunks = msg.get("chunks", [])
-                    if isinstance(chunks, list):
+                    chunks = validate_chunk_ids(msg.get("chunks", []))
+                    if chunks:
                         manager.subscribe(websocket, chunks)
                         logger.info(f"Client subscribed to {len(chunks)} chunks")
 
                 elif msg_type == "unsubscribe":
-                    chunks = msg.get("chunks", [])
-                    if isinstance(chunks, list):
+                    chunks = validate_chunk_ids(msg.get("chunks", []))
+                    if chunks:
                         manager.unsubscribe(websocket, chunks)
                         logger.info(f"Client unsubscribed from {len(chunks)} chunks")
 
