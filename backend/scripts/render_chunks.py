@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import io
 import os
+import ssl as ssl_module
 import sys
 import time
 from pathlib import Path
@@ -32,6 +33,17 @@ from PIL import Image
 
 from app.services import storage
 from app.config import settings
+
+
+def _rds_ssl_context():
+    """Create SSL context for RDS connections when needed."""
+    db_url = settings.database_url
+    if "rds.amazonaws.com" in db_url or "sslmode" in db_url:
+        ctx = ssl_module.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl_module.CERT_NONE
+        return ctx
+    return None
 
 # Number of concurrent chunk renders
 DEFAULT_WORKERS = min(8, os.cpu_count() or 4)
@@ -147,11 +159,12 @@ async def render_all_chunks(
     print(f"Rendering {total_chunks} chunks with {workers} concurrent workers...")
     print()
 
-    # Create connection pool
     pool = await asyncpg.create_pool(
         settings.database_url,
         min_size=workers,
         max_size=workers * 2,
+        timeout=120,
+        ssl=_rds_ssl_context(),
     )
 
     try:
@@ -253,6 +266,8 @@ async def render_overview() -> None:
         settings.database_url,
         min_size=1,
         max_size=2,
+        timeout=120,
+        ssl=_rds_ssl_context(),
     )
 
     try:

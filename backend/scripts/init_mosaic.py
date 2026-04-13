@@ -424,14 +424,28 @@ async def init_mosaic(
     batch_size: int = DB_BATCH_SIZE,
 ) -> None:
     """Initialize the mosaic with the specified pattern."""
+    import ssl as ssl_module
+
     import asyncpg
     from app.config import settings
 
-    # Create connection pool for fast batch operations
+    db_url = settings.database_url
+    masked = db_url.split("@")[-1] if "@" in db_url else db_url
+    print(f"Connecting to database: ...@{masked}")
+
+    ssl_ctx = None
+    if "rds.amazonaws.com" in db_url or "sslmode" in db_url:
+        ssl_ctx = ssl_module.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl_module.CERT_NONE
+        print("Using SSL for RDS connection")
+
     pool = await asyncpg.create_pool(
         settings.database_url,
         min_size=2,
         max_size=10,
+        timeout=120,
+        ssl=ssl_ctx,
     )
 
     try:
