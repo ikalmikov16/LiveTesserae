@@ -174,8 +174,7 @@ export function PixelCanvas({
     renderDisplay();
   }, [renderDisplay]);
 
-  // Convert mouse position to pixel coordinates
-  const getPixelCoords = (e: React.MouseEvent | React.TouchEvent) => {
+  const getPixelCoords = (e: React.MouseEvent | React.TouchEvent | MouseEvent | TouchEvent) => {
     const canvas = displayCanvasRef.current;
     if (!canvas) return null;
 
@@ -289,30 +288,50 @@ export function PixelCanvas({
     return () => window.removeEventListener("mouseup", handleGlobalMouseUp);
   }, [isDrawing]);
 
-  // Touch handlers
-  const handleTouchStart = (e: React.TouchEvent) => {
-    e.preventDefault();
-    setIsDrawing(true);
-    hasStartedDrawingRef.current = false;
-    const coords = getPixelCoords(e);
-    if (coords) {
-      handleToolAction(coords.x, coords.y, true);
-    }
-  };
+  // Touch handlers registered natively with { passive: false } so
+  // preventDefault works (React registers touch listeners as passive).
+  const touchCtxRef = useRef({ isDrawing, tool, getPixelCoords, handleToolAction });
+  useEffect(() => {
+    touchCtxRef.current = { isDrawing, tool, getPixelCoords, handleToolAction };
+  });
 
-  const handleTouchMove = (e: React.TouchEvent) => {
-    e.preventDefault();
-    if (!isDrawing) return;
-    const coords = getPixelCoords(e);
-    if (coords && (tool === "pencil" || tool === "eraser")) {
-      handleToolAction(coords.x, coords.y, false);
-    }
-  };
+  useEffect(() => {
+    const canvas = displayCanvasRef.current;
+    if (!canvas) return;
 
-  const handleTouchEnd = () => {
-    setIsDrawing(false);
-    hasStartedDrawingRef.current = false;
-  };
+    const handleTouchStart = (e: TouchEvent) => {
+      e.preventDefault();
+      setIsDrawing(true);
+      hasStartedDrawingRef.current = false;
+      const ctx = touchCtxRef.current;
+      const coords = ctx.getPixelCoords(e);
+      if (coords) ctx.handleToolAction(coords.x, coords.y, true);
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      const ctx = touchCtxRef.current;
+      if (!ctx.isDrawing) return;
+      const coords = ctx.getPixelCoords(e);
+      if (coords && (ctx.tool === "pencil" || ctx.tool === "eraser")) {
+        ctx.handleToolAction(coords.x, coords.y, false);
+      }
+    };
+
+    const handleTouchEnd = () => {
+      setIsDrawing(false);
+      hasStartedDrawingRef.current = false;
+    };
+
+    canvas.addEventListener("touchstart", handleTouchStart, { passive: false });
+    canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
+    canvas.addEventListener("touchend", handleTouchEnd);
+    return () => {
+      canvas.removeEventListener("touchstart", handleTouchStart);
+      canvas.removeEventListener("touchmove", handleTouchMove);
+      canvas.removeEventListener("touchend", handleTouchEnd);
+    };
+  }, []);
 
   // Get cursor style based on tool
   const getCursorStyle = () => {
@@ -338,9 +357,6 @@ export function PixelCanvas({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
       />
     </div>
   );

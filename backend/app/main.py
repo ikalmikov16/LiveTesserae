@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import mosaic, tiles, chunks
@@ -111,12 +112,12 @@ app.include_router(ws_router, tags=["websocket"])
 
 @app.get("/health")
 async def health():
-    """Health check endpoint with database connectivity status."""
+    """Health check endpoint — returns 503 when the database is unreachable
+    so the ALB only routes traffic to fully-ready tasks."""
     db_status = "disconnected"
 
     try:
         if db.pool:
-            # Test database connection
             result = await db.fetchval("SELECT 1")
             if result == 1:
                 db_status = "connected"
@@ -124,8 +125,7 @@ async def health():
         logger.error(f"Database health check failed: {e}")
         db_status = "error"
 
-    return {
-        "status": "ok",
+    body = {
         "database": db_status,
         "mosaic": {
             "grid_size": f"{settings.grid_width}x{settings.grid_height}",
@@ -133,3 +133,10 @@ async def health():
             "chunk_size": settings.chunk_size,
         },
     }
+
+    if db_status != "connected":
+        body["status"] = "unavailable"
+        return JSONResponse(content=body, status_code=503)
+
+    body["status"] = "ok"
+    return body
