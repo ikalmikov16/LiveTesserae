@@ -45,6 +45,7 @@ def _rds_ssl_context():
         return ctx
     return None
 
+
 # Number of concurrent chunk renders
 DEFAULT_WORKERS = min(8, os.cpu_count() or 4)
 

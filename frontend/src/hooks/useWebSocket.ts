@@ -27,7 +27,6 @@ export function useWebSocket({
   // Track if we ever successfully connected (to suppress noisy logs on first failure)
   const hasConnectedRef = useRef(false);
   const retriesRef = useRef(0);
-  const MAX_RETRIES = 15;
   const MAX_BACKOFF = 30000;
   // Use ref to avoid stale closure issues with the callback
   const onTileUpdateRef = useRef(onTileUpdate);
@@ -118,14 +117,10 @@ export function useWebSocket({
           return;
         }
 
-        if (retriesRef.current >= MAX_RETRIES) {
-          console.warn("WebSocket: max retries reached, giving up");
-          return;
-        }
-
-        // Exponential backoff: reconnectDelay * 2^retries, capped at MAX_BACKOFF
+        // Exponential backoff: reconnectDelay * 2^retries, capped at MAX_BACKOFF.
+        // Never give up — keep retrying at MAX_BACKOFF indefinitely.
         const delay = Math.min(reconnectDelay * Math.pow(2, retriesRef.current), MAX_BACKOFF);
-        retriesRef.current++;
+        if (retriesRef.current < 20) retriesRef.current++;
 
         reconnectTimeoutRef.current = window.setTimeout(() => {
           if (mountedRef.current) {

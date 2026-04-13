@@ -14,6 +14,7 @@ Usage:
     python scripts/init_mosaic.py --pattern checkerboard
     python scripts/init_mosaic.py --pattern plasma
     python scripts/init_mosaic.py --pattern image --image-path photo.jpg
+    python scripts/init_mosaic.py --pattern white  # Fill with blank white tiles
     python scripts/init_mosaic.py --pattern clear  # Remove all tiles
 """
 
@@ -235,6 +236,12 @@ def generate_plasma_tile(x: int, y: int, time_val: float = 0) -> bytes:
     return rgb_array_to_bytes(rgb)
 
 
+def generate_white_tile(x: int, y: int) -> bytes:
+    """Generate a solid white tile."""
+    rgb = np.full((TILE_SIZE, TILE_SIZE, 3), 255, dtype=np.uint8)
+    return rgb_array_to_bytes(rgb)
+
+
 def generate_noise_tile(x: int, y: int) -> bytes:
     """Generate a random noise tile using numpy (vectorized)."""
     # Use deterministic seed based on coordinates for reproducibility
@@ -328,6 +335,7 @@ def process_tile_batch(args: tuple) -> list[tuple[int, int, bytes]]:
         "checkerboard": generate_checkerboard_tile,
         "plasma": generate_plasma_tile,
         "noise": generate_noise_tile,
+        "white": generate_white_tile,
         "image": generate_image_tile,
     }
 
@@ -573,6 +581,7 @@ def main():
             "checkerboard",
             "plasma",
             "noise",
+            "white",
             "image",
             "clear",
         ],
