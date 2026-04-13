@@ -1,9 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Brush, Users, Sparkles } from "lucide-react";
+import {
+  Grid3X3,
+  Sparkles,
+  Users,
+  Scan,
+  MousePointerClick,
+  Paintbrush,
+  Zap,
+  Heart,
+} from "lucide-react";
 import { getMosaicStats, type MosaicStats } from "../api/mosaic";
 import { getMosaicOverviewUrl, getOverviewVersion } from "../api/chunks";
 import "./LandingPage.css";
+
+const TOTAL_TILES = 1_000_000;
+const TILE_SIZE = 32;
+const TOTAL_PIXELS = TOTAL_TILES * TILE_SIZE * TILE_SIZE;
 
 function useCountUp(target: number, durationMs: number = 1500): number {
   const [value, setValue] = useState(0);
@@ -50,9 +63,11 @@ export function LandingPage() {
       .catch(() => setOverviewUrl(getMosaicOverviewUrl()));
   }, []);
 
-  const editedTiles = useCountUp(stats?.edited_tiles ?? 0);
+  const statsLoaded = stats !== null;
+  const totalTiles = useCountUp(statsLoaded ? TOTAL_TILES : 0);
   const totalEdits = useCountUp(stats?.total_edits ?? 0);
   const uniqueEditors = useCountUp(stats?.unique_editors ?? 0);
+  const totalPixels = useCountUp(statsLoaded ? TOTAL_PIXELS : 0, 2000);
 
   return (
     <div className="landing-page">
@@ -83,9 +98,9 @@ export function LandingPage() {
       {stats && (
         <div className="landing-page__stats">
           <div className="landing-page__stat glass-panel">
-            <Brush size={20} className="landing-page__stat-icon" />
-            <span className="landing-page__stat-value">{formatNumber(editedTiles)}</span>
-            <span className="landing-page__stat-label">tiles painted</span>
+            <Grid3X3 size={20} className="landing-page__stat-icon" />
+            <span className="landing-page__stat-value">{formatNumber(totalTiles)}</span>
+            <span className="landing-page__stat-label">total tiles</span>
           </div>
           <div className="landing-page__stat glass-panel">
             <Sparkles size={20} className="landing-page__stat-icon" />
@@ -97,12 +112,51 @@ export function LandingPage() {
             <span className="landing-page__stat-value">{formatNumber(uniqueEditors)}</span>
             <span className="landing-page__stat-label">artists</span>
           </div>
+          <div className="landing-page__stat glass-panel">
+            <Scan size={20} className="landing-page__stat-icon" />
+            <span className="landing-page__stat-value">{formatNumber(totalPixels)}</span>
+            <span className="landing-page__stat-label">total pixels</span>
+          </div>
         </div>
       )}
 
       {statsError && !stats && (
         <p className="landing-page__stats-error">Stats unavailable right now</p>
       )}
+
+      <section className="landing-page__how-it-works">
+        <h2 className="landing-page__section-title">How It Works</h2>
+        <div className="landing-page__steps">
+          <div className="landing-page__step glass-panel">
+            <MousePointerClick size={28} className="landing-page__step-icon" />
+            <h3 className="landing-page__step-title">Pick a tile</h3>
+            <p className="landing-page__step-desc">
+              Explore a mosaic of 1 million tiles arranged on a 1,000 &times; 1,000 grid
+            </p>
+          </div>
+          <div className="landing-page__step glass-panel">
+            <Paintbrush size={28} className="landing-page__step-icon" />
+            <h3 className="landing-page__step-title">Paint it</h3>
+            <p className="landing-page__step-desc">
+              Each tile is a tiny 32 &times; 32 pixel canvas &mdash; your own mini artwork
+            </p>
+          </div>
+          <div className="landing-page__step glass-panel">
+            <Zap size={28} className="landing-page__step-icon" />
+            <h3 className="landing-page__step-title">See it live</h3>
+            <p className="landing-page__step-desc">
+              Your changes appear instantly for everyone in real time
+            </p>
+          </div>
+          <div className="landing-page__step glass-panel">
+            <Heart size={28} className="landing-page__step-icon" />
+            <h3 className="landing-page__step-title">Build together</h3>
+            <p className="landing-page__step-desc">
+              Every edit becomes part of a massive collaborative artwork
+            </p>
+          </div>
+        </div>
+      </section>
 
       <button className="landing-page__cta" onClick={() => navigate("/mosaic")}>
         Start Creating
