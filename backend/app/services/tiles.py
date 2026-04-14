@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 # Track running background tasks to prevent premature garbage collection
 _background_tasks: set[asyncio.Task] = set()
 
+# Limit concurrent chunk/overview renders to prevent OOM on small containers.
+# Each render decodes a 5000x5000 overview (~75 MB) plus chunk buffers,
+# so allowing too many in parallel easily exceeds Fargate memory limits.
+_render_semaphore = asyncio.Semaphore(1)
+
 
 def calculate_tile_id(x: int, y: int) -> str:
     """Calculate tile ID from coordinates. Format: 'x:y'"""
@@ -41,39 +46,43 @@ async def _update_chunk_and_overview(
     This runs asynchronously after the API response is sent, so users don't
     wait for image rendering. The tile data is already saved and visible
     at Level 2 immediately.
+
+    A semaphore ensures only one render runs at a time, preventing OOM from
+    concurrent overview decodes (~75 MB each for the 5000x5000 image).
     """
     try:
-        # Update the chunk (Level 1)
-        chunk_image_data = await chunk_renderer.update_chunk_tile(
-            cx, cy, x, y, tile_data
-        )
-        chunk_version = await storage.save_chunk_image(cx, cy, chunk_image_data)
+        async with _render_semaphore:
+            # Update the chunk (Level 1)
+            chunk_image_data = await chunk_renderer.update_chunk_tile(
+                cx, cy, x, y, tile_data
+            )
+            chunk_version = await storage.save_chunk_image(cx, cy, chunk_image_data)
 
-        # Broadcast chunk version update to subscribers
-        chunk_id = f"{cx}:{cy}"
-        await manager.broadcast_to_chunk(
-            chunk_id,
-            {
-                "type": "chunk_updated",
-                "cx": cx,
-                "cy": cy,
-                "version": chunk_version,
-            },
-        )
+            # Broadcast chunk version update to subscribers
+            chunk_id = f"{cx}:{cy}"
+            await manager.broadcast_to_chunk(
+                chunk_id,
+                {
+                    "type": "chunk_updated",
+                    "cx": cx,
+                    "cy": cy,
+                    "version": chunk_version,
+                },
+            )
 
-        # Update the overview (Level 0)
-        overview_image_data = await chunk_renderer.update_overview_chunk(
-            cx, cy, chunk_image_data
-        )
-        overview_version = await storage.save_mosaic_overview(overview_image_data)
+            # Update the overview (Level 0)
+            overview_image_data = await chunk_renderer.update_overview_chunk(
+                cx, cy, chunk_image_data
+            )
+            overview_version = await storage.save_mosaic_overview(overview_image_data)
 
-        # Broadcast overview update to ALL connected clients
-        await manager.broadcast(
-            {
-                "type": "overview_updated",
-                "version": overview_version,
-            }
-        )
+            # Broadcast overview update to ALL connected clients
+            await manager.broadcast(
+                {
+                    "type": "overview_updated",
+                    "version": overview_version,
+                }
+            )
 
         logger.debug(
             f"Background: Updated chunk ({cx}, {cy}) v{chunk_version} and overview v{overview_version}"
