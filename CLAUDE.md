@@ -90,7 +90,7 @@ backend/pause.sh | resume.sh # scale ECS to 0 / stop-start RDS (cost saving)
 ## Security & secrets
 
 - **Never commit real credentials.** `task-def.json` leaked the old RDS password into this public repo's git history. That credential is dead (the AWS account is closed), but purge the history before or during the redeploy, and for the new account keep secrets in `.env` / `.env.deploy` (gitignored) or Secrets Manager. If a task def needs committing, strip `environment` values first.
-- The app is deliberately auth-less; abuse controls are per-IP rate limiting (`_check_rate_limit`) and WS connection caps in `config.py`. `get_client_ip` trusts leftmost `X-Forwarded-For` — known spoofable, fix pending.
+- The app is deliberately auth-less; abuse controls are per-IP rate limiting (`_check_rate_limit`) and WS connection caps in `config.py`. `get_client_ip` indexes `X-Forwarded-For` from the **right** using `settings.trusted_proxy_hops` — only entries appended by our own proxies are trustworthy. **`TRUSTED_PROXY_HOPS` must be set in production** (1 = ALB only, 2 = CloudFront→ALB); left at 0 behind a proxy, every request carries the load balancer's IP and the per-IP limits silently become site-wide. Note `hops=2` is only sound if the ALB cannot be reached directly — otherwise a client bypassing CloudFront controls the entry we read.
 
 ## Render concurrency rules (load-bearing — read before touching the render path)
 
@@ -110,5 +110,7 @@ backend/pause.sh | resume.sh # scale ECS to 0 / stop-start RDS (cost saving)
 - Tile HTTP caching is contradictory: server sends 1-year `max-age`, client fetches `no-store`. Impact is smaller than it looks (the canvas LRU skips cached tiles); fix is versioned URLs.
 - `MosaicCanvas` has no touch handlers — mobile users cannot pan/zoom the mosaic (the tile editor itself works on touch).
 - `MosaicCanvas` wheel-zoom only triggers on `deltaMode === 1`, which is Firefox-only; Chrome/Safari mouse wheels pan instead of zooming.
+- **Chunk subscriptions are broken on a plain page load, no fault required.** Fit-to-screen makes all 100 chunks "visible", the client subscribes to all of them, and the server silently keeps only the first 50 (`routes.py` `chunks[:50]`, plus `ws_max_subscriptions=50`) — which are cx 0–4, the left half. The first zoom-in then diffs against the client's list of 100, so it sends *no* subscribe and a 99-entry unsubscribe that truncates to exactly the 50 the server held, leaving it with **zero** subscriptions while the badge still reads "Live". Verified against a live server. Any fix must keep the client's intent ≤ 50 chunks, unsubscribe before subscribing, and skip subscribing at Level 0. Batch 2.
 - WebSocket reconnect does not re-subscribe to visible chunks, so live updates stop silently after any drop. Batch 2.
+- **A saved tile is only painted onto the mosaic by the WebSocket echo** — `setTileUpdate` is called from exactly one place (the WS handler), and `TileEditorPanel.handleClose` clears the preview overlay *before* awaiting the save. So whenever a `tile_update` doesn't arrive, the user's own artwork visibly reverts on close. This is what turns the two subscription bugs above from "stale view" into "my drawing disappeared". Batch 2.
 - `render_chunks.py --skip-existing` is parsed but never passed to `main()` — silently ignored.
