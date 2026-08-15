@@ -13,11 +13,6 @@ logger = logging.getLogger(__name__)
 # Track running background tasks to prevent premature garbage collection
 _background_tasks: set[asyncio.Task] = set()
 
-# Limit concurrent chunk/overview renders to prevent OOM on small containers.
-# Each render decodes a 5000x5000 overview (~75 MB) plus chunk buffers,
-# so allowing too many in parallel easily exceeds Fargate memory limits.
-_render_semaphore = asyncio.Semaphore(1)
-
 
 def calculate_tile_id(x: int, y: int) -> str:
     """Calculate tile ID from coordinates. Format: 'x:y'"""
@@ -48,41 +43,50 @@ async def _update_chunk_and_overview(
     at Level 2 immediately.
 
     A semaphore ensures only one render runs at a time, preventing OOM from
-    concurrent overview decodes (~75 MB each for the 5000x5000 image).
+    concurrent overview decodes (~75 MB each for the 5000x5000 image). It is
+    shared with the on-demand renders in the chunks API, so no WebSocket send
+    may happen while it is held: manager.broadcast awaits every connection in
+    turn, and one backpressured client would pin the permit — and therefore
+    every waiting HTTP request — for as long as it stalls.
     """
     try:
-        async with _render_semaphore:
-            # Update the chunk (Level 1)
+        async with chunk_renderer.render_semaphore:
+            # Update the chunk (Level 1). read -> composite -> save must stay
+            # inside one hold, or a concurrent writer can read the same
+            # pre-image and drop this tile.
             chunk_image_data = await chunk_renderer.update_chunk_tile(
                 cx, cy, x, y, tile_data
             )
             chunk_version = await storage.save_chunk_image(cx, cy, chunk_image_data)
 
-            # Broadcast chunk version update to subscribers
-            chunk_id = f"{cx}:{cy}"
-            await manager.broadcast_to_chunk(
-                chunk_id,
-                {
-                    "type": "chunk_updated",
-                    "cx": cx,
-                    "cy": cy,
-                    "version": chunk_version,
-                },
+            # Notify chunk subscribers without waiting on them, so a slow
+            # client cannot delay the overview render below.
+            _schedule_background_task(
+                manager.broadcast_to_chunk(
+                    f"{cx}:{cy}",
+                    {
+                        "type": "chunk_updated",
+                        "cx": cx,
+                        "cy": cy,
+                        "version": chunk_version,
+                    },
+                )
             )
 
-            # Update the overview (Level 0)
+            # Update the overview (Level 0), same read -> composite -> save rule.
             overview_image_data = await chunk_renderer.update_overview_chunk(
                 cx, cy, chunk_image_data
             )
             overview_version = await storage.save_mosaic_overview(overview_image_data)
 
-            # Broadcast overview update to ALL connected clients
-            await manager.broadcast(
-                {
-                    "type": "overview_updated",
-                    "version": overview_version,
-                }
-            )
+        # Permit released: broadcasting to every connected client can now take
+        # as long as the slowest client needs without blocking other renders.
+        await manager.broadcast(
+            {
+                "type": "overview_updated",
+                "version": overview_version,
+            }
+        )
 
         logger.debug(
             f"Background: Updated chunk ({cx}, {cy}) v{chunk_version} and overview v{overview_version}"

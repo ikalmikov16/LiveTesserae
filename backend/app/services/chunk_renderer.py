@@ -12,6 +12,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
+import numpy as np
 from PIL import Image
 
 from app.config import settings
@@ -27,6 +28,20 @@ MOSAIC_PREVIEW_SIZE = 5000  # pixels for full overview (5 px/tile)
 # Thread pool for CPU-bound PIL operations (prevents blocking the event loop)
 _image_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pil_worker")
 
+# Serialises every image render in the process. One overview decode is a
+# 5000x5000 RGB buffer (~75 MB) and a 1 GB Fargate task cannot hold several at
+# once, so all render paths — the background task after a tile save and the
+# on-demand renders in the chunks API — share this single permit.
+#
+# MUST be acquired only at the OUTERMOST call site, never inside the render
+# helpers below: asyncio.Semaphore is not reentrant, so a nested acquire
+# deadlocks the process permanently (no timeout, no self-healing).
+#
+# The critical section has to span read -> composite -> save. Releasing between
+# the render call and the caller's save lets a second writer read the same
+# pre-image and clobber the first writer's tile.
+render_semaphore = asyncio.Semaphore(1)
+
 
 def rgb_bytes_to_image(pixel_data: bytes) -> Image.Image:
     """
@@ -38,17 +53,11 @@ def rgb_bytes_to_image(pixel_data: bytes) -> Image.Image:
     Returns:
         32x32 PIL Image in RGB mode
     """
-    img = Image.new("RGB", (32, 32))
-    pixels = img.load()
-
-    for i in range(1024):  # 32×32 = 1024 pixels
-        x = i % 32
-        y = i // 32
-        idx = i * 3
-        r, g, b = pixel_data[idx], pixel_data[idx + 1], pixel_data[idx + 2]
-        pixels[x, y] = (r, g, b)
-
-    return img
+    # np.frombuffer gives a read-only view over the bytes, so copy before
+    # handing it to PIL — Image.fromarray keeps a reference to the buffer and
+    # downstream paste/resize expect a writable image.
+    arr = np.frombuffer(pixel_data, dtype=np.uint8).reshape((32, 32, 3)).copy()
+    return Image.fromarray(arr, mode="RGB")
 
 
 async def run_in_thread(func, *args, **kwargs):

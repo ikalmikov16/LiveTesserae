@@ -1,27 +1,13 @@
 """Tests for the tile service layer with a real database."""
 
-import asyncio
 from datetime import datetime
-
-import pytest
 
 from app.services import tiles as tile_service
 from app.services.database import db
 
-
-@pytest.fixture
-def storage_dir(tmp_path, monkeypatch):
-    """Isolated storage so background tasks don't fail."""
-    chunks_dir = tmp_path / "chunks"
-    chunks_dir.mkdir()
-    monkeypatch.setattr("app.config.settings.chunks_path", str(chunks_dir))
-    monkeypatch.setattr("app.config.settings.storage_mode", "local")
-
-    import app.services.storage as storage_mod
-
-    storage_mod._version_lock = asyncio.Lock()
-
-    return chunks_dir
+# storage_dir comes from tests/integration/conftest.py. This module used to
+# define its own copy, which shadowed the shared one and skipped its teardown
+# drain, leaking background renders into the real backend/storage/chunks/.
 
 
 async def test_save_tile_creates_row(valid_pixel_data, storage_dir):

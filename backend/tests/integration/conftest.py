@@ -75,9 +75,30 @@ def clean_stats_cache():
     _stats_cache["expires_at"] = 0.0
 
 
+@pytest.fixture(autouse=True)
+def clean_render_state():
+    """Reset the chunks API single-flight state between tests.
+
+    A finished render task left over from a previous test would otherwise be
+    reused (or, if still running, keep pointing at that test's deleted
+    tmp_path).
+    """
+    from app.api import chunks as chunks_api
+
+    chunks_api._reset_render_state()
+
+
 @pytest.fixture
-def storage_dir(tmp_path, monkeypatch):
-    """Isolated storage directory per test — patches settings.chunks_path."""
+async def storage_dir(tmp_path, monkeypatch):
+    """Isolated storage directory per test — patches settings.chunks_path.
+
+    Drains background renders on teardown, while chunks_path is still patched.
+    A task that outlives its test is otherwise awaited by the *next* test's
+    clean_db — by which point monkeypatch has restored the default path, so the
+    render lands in the developer's real backend/storage/chunks/ instead of the
+    sandbox. Draining here works because a fixture is finalized before the
+    fixtures it depends on, so this runs before monkeypatch.undo().
+    """
     chunks_dir = tmp_path / "chunks"
     chunks_dir.mkdir()
     monkeypatch.setattr("app.config.settings.chunks_path", str(chunks_dir))
@@ -87,7 +108,9 @@ def storage_dir(tmp_path, monkeypatch):
 
     storage_mod._version_lock = asyncio.Lock()
 
-    return chunks_dir
+    yield chunks_dir
+
+    await drain_background_tasks()
 
 
 @pytest.fixture
@@ -101,8 +124,17 @@ async def client(storage_dir):
 
 
 async def drain_background_tasks():
-    """Wait for all pending background tasks (chunk render, overview update) to complete."""
+    """Wait for all pending background work to finish.
+
+    Covers both the post-save chunk/overview renders scheduled by the tile
+    service and the out-of-band overview refreshes scheduled by the chunks API.
+    Loops because draining one set can schedule work in the other.
+    """
+    from app.api.chunks import _refresh_tasks
     from app.services.tiles import _background_tasks
 
-    if _background_tasks:
-        await asyncio.gather(*list(_background_tasks), return_exceptions=True)
+    for _ in range(10):
+        pending = list(_background_tasks) + list(_refresh_tasks)
+        if not pending:
+            return
+        await asyncio.gather(*pending, return_exceptions=True)
