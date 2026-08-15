@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from app.services.database import db
+from tests.integration.conftest import drain_background_tasks
 
 
 async def test_put_tile_success(client, valid_pixel_data):
@@ -105,25 +106,32 @@ async def test_get_tile_info_not_found(client):
     assert r.status_code == 404
 
 
-async def test_delete_tile_exists(client, valid_pixel_data):
+async def test_delete_route_is_not_exposed(client, valid_pixel_data):
+    """
+    There must be no public delete. The API is unauthenticated, so an open
+    DELETE would let a single loop erase the mosaic. Resetting a tile is an
+    operator action via the service layer.
+
+    Asserts the property (the tile survives) rather than a specific status:
+    the exact code for a method mismatch is Starlette's to choose, and
+    requirements.txt pins only fastapi>=0.109.0.
+    """
     await client.put("/api/tiles/5/5", content=valid_pixel_data)
+    await drain_background_tasks()
+
     r = await client.delete("/api/tiles/5/5")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["tile_id"] == "5:5"
-    assert data["message"] == "Tile reset to default"
+    assert r.status_code != 200, "DELETE must not be routable"
+    assert r.status_code in (404, 405)
 
+    # The tile is untouched.
+    assert (await client.get("/api/tiles/5/5")).status_code == 200
 
-async def test_delete_tile_not_found(client):
-    r = await client.delete("/api/tiles/0/0")
-    assert r.status_code == 404
+    # Belt and braces: no DELETE handler is registered for the tile path.
+    from app.main import app
 
-
-async def test_delete_then_get(client, valid_pixel_data):
-    await client.put("/api/tiles/5/5", content=valid_pixel_data)
-    await client.delete("/api/tiles/5/5")
-    r = await client.get("/api/tiles/5/5")
-    assert r.status_code == 404
+    for route in app.routes:
+        if getattr(route, "path", None) == "/api/tiles/{x}/{y}":
+            assert "DELETE" not in getattr(route, "methods", set())
 
 
 async def test_put_tile_correct_chunk_id(client, valid_pixel_data):

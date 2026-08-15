@@ -92,13 +92,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS - origins from environment variable (comma-separated)
+# Configure CORS - origins from environment variable (comma-separated).
+# No cookies or Authorization are used (the session id is a plain header), so
+# credentials stay off and the method/header lists are limited to what the
+# frontend actually sends.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in settings.cors_origins.split(",")],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "PUT"],
+    allow_headers=["Content-Type", "X-Session-Id"],
 )
 
 # Register API routers

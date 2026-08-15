@@ -42,10 +42,3 @@ class TileSaveResponse(BaseModel):
     chunk_id: str
     version: int
     message: str = "Tile saved successfully"
-
-
-class TileDeleteResponse(BaseModel):
-    """Response after deleting a tile."""
-
-    tile_id: str
-    message: str = "Tile reset to default"

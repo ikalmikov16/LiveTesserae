@@ -28,10 +28,15 @@ async def test_full_save_pipeline(client, valid_pixel_data):
 
 
 async def test_delete_pipeline(client, valid_pixel_data):
+    """Deleting via the service layer still clears the tile from the chunk image.
+
+    There is no public DELETE route (see test_tiles_api), but operators reset
+    tiles through the service, and that path must repaint the chunk.
+    """
     await client.put("/api/tiles/0/0", content=valid_pixel_data)
     await drain_background_tasks()
 
-    await client.delete("/api/tiles/0/0")
+    await tile_service.delete_tile(0, 0)
     await drain_background_tasks()
 
     chunk_img = await storage.get_chunk_image(0, 0)

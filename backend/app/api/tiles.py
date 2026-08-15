@@ -5,7 +5,7 @@ import time
 from fastapi import APIRouter, HTTPException, Path, Request, Response
 
 from app.config import settings
-from app.models.tile import TileDeleteResponse, TileResponse, TileSaveResponse
+from app.models.tile import TileResponse, TileSaveResponse
 from app.services import tiles as tile_service
 from app.utils import get_client_ip
 from app.websocket import manager
@@ -20,6 +20,23 @@ RGB_DATA_SIZE = 32 * 32 * 3
 # In-memory rate limit store: IP -> list of request timestamps
 _rate_limit_store: dict[str, list[float]] = {}
 
+# The store gains an entry per distinct client IP and would otherwise grow for
+# the lifetime of the process. Sweeping every N checks keeps it proportional to
+# recent traffic without paying a full scan on every request.
+_SWEEP_EVERY = 1000
+_checks_since_sweep = 0
+
+
+def _sweep_rate_limit_store(now: float, window: float) -> None:
+    """Drop IPs whose most recent request has fallen out of the window."""
+    stale = [
+        ip
+        for ip, timestamps in _rate_limit_store.items()
+        if not timestamps or now - timestamps[-1] >= window
+    ]
+    for ip in stale:
+        del _rate_limit_store[ip]
+
 
 def _check_rate_limit(request: Request) -> None:
     """Enforce per-IP rate limiting on tile saves."""
@@ -29,6 +46,12 @@ def _check_rate_limit(request: Request) -> None:
     client_ip = get_client_ip(request)
     now = time.monotonic()
     window = settings.rate_limit_window_seconds
+
+    global _checks_since_sweep
+    _checks_since_sweep += 1
+    if _checks_since_sweep >= _SWEEP_EVERY:
+        _checks_since_sweep = 0
+        _sweep_rate_limit_store(now, window)
 
     timestamps = _rate_limit_store.get(client_ip, [])
     timestamps = [t for t in timestamps if now - t < window]
@@ -182,22 +205,7 @@ async def save_tile(
     )
 
 
-@router.delete("/tiles/{x}/{y}", response_model=TileDeleteResponse)
-async def delete_tile(
-    x: int = Path(ge=0, lt=settings.grid_width, description="X coordinate"),
-    y: int = Path(ge=0, lt=settings.grid_height, description="Y coordinate"),
-):
-    """
-    Delete a tile (reset to default state).
-
-    Removes the tile from the database.
-    """
-    validate_coordinates(x, y)
-
-    tile_id = tile_service.calculate_tile_id(x, y)
-    deleted = await tile_service.delete_tile(x, y)
-
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Tile not found (already default)")
-
-    return TileDeleteResponse(tile_id=tile_id)
+# NOTE: there is deliberately no public DELETE route. The API is unauthenticated
+# by design (anyone may paint), but an open delete lets a single loop erase the
+# mosaic. Resetting a tile is an operator action — use
+# app.services.tiles.delete_tile from a script.

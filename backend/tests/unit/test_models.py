@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from app.models.tile import (
     TileCoordinates,
-    TileDeleteResponse,
     TileResponse,
     TileSaveResponse,
 )
@@ -36,11 +35,6 @@ def test_tile_response_missing_fields():
 def test_tile_save_response_defaults():
     r = TileSaveResponse(tile_id="5:3", chunk_id="0:0", version=1)
     assert r.message == "Tile saved successfully"
-
-
-def test_tile_delete_response_defaults():
-    r = TileDeleteResponse(tile_id="5:3")
-    assert r.message == "Tile reset to default"
 
 
 def test_tile_coordinates_bounds():

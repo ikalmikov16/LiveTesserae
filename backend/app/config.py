@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     # CORS: comma-separated allowed origins
     cors_origins: str = "http://localhost:5173"
 
+    # Number of reverse proxies we control in front of this app, counted from
+    # the app inward (ALB only = 1; CloudFront -> ALB = 2). Only the last N
+    # X-Forwarded-For entries are written by our own infrastructure; anything
+    # further left is client-supplied and must not be trusted. 0 = no proxy
+    # (local dev), meaning the header is ignored entirely.
+    trusted_proxy_hops: int = 0
+
     # Mosaic configuration
     grid_width: int = 1000
     grid_height: int = 1000
