@@ -103,6 +103,12 @@ backend/pause.sh | resume.sh # scale ECS to 0 / stop-start RDS (cost saving)
 - **Waiters must `asyncio.shield` a shared render.** Starlette cancels a handler when its client disconnects, and that cancellation propagates into the awaited task — aborting the render for every other waiter (verified on 3.12).
 - Adding module-level state to the render path means adding a reset to the autouse fixtures in `tests/integration/conftest.py` and teaching `drain_background_tasks()` about it.
 
+## Throughput reality (measured, 0.5 vCPU / 1 GB)
+
+One tile save costs **1.7–2.3 s end to end**, of which the 5000×5000 overview re-encode is **1716 ms — 9.4× the chunk render**. That caps the *whole site* at ~0.5 saves/sec: five people drawing at one tile per 2 s each saw updates arrive 27 s after they stopped. The person drawing never notices (their PUT returns in ~20 ms); everyone else falls behind. Zoom level 0 only activates below 3 px/tile, so the overview is never displayed wider than ~3000 px — 5000×5000 is ~2.8× more pixels than can reach a screen. Shrinking it and coalescing the render are worth ~10×. See `.cursor/plans/pre-redeploy-hardening.md` §1.5.
+
+**Never re-render a chunk from a blank canvas.** If a chunk image is missing from storage, `update_chunk_tile` composites onto fresh white, so one save wipes every other tile in that chunk from Levels 0–1 — permanently, since a chunk is only rebuilt when its image is *missing*. Verified: 6 pre-existing tiles erased by one unrelated edit on a cold image store. Always `render_chunks.py` after a restore and before opening traffic.
+
 ## Sharp edges (known, unfixed)
 
 - Overview re-render runs after **every** tile save; no coalescing. The `chunks.dirty` column exists for this but is never read. This is the real scaling ceiling (~seconds per edit on 0.5 vCPU) — P2 in `.cursor/plans/pre-redeploy-hardening.md`.
