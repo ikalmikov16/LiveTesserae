@@ -82,10 +82,53 @@ async def test_get_tile_not_found(client):
     assert r.status_code == 404
 
 
-async def test_get_tile_cache_header(client, valid_pixel_data):
+async def test_get_tile_cache_header_requires_revalidation(client, valid_pixel_data):
+    """Tile URLs carry no version, so they must never be cached by age.
+
+    This used to send a one-year max-age, survivable only because the client
+    asked for no-store. Put a CDN in front of /api and every visitor would get
+    pixels frozen for a year.
+    """
     await client.put("/api/tiles/5/5", content=valid_pixel_data)
     r = await client.get("/api/tiles/5/5")
-    assert "max-age=31536000" in r.headers["cache-control"]
+    assert "no-cache" in r.headers["cache-control"]
+    assert "max-age=31536000" not in r.headers.get("cache-control", "")
+    assert r.headers["etag"] == '"tile_5_5_v1"'
+
+
+async def test_get_tile_etag_returns_304(client, valid_pixel_data):
+    await client.put("/api/tiles/5/5", content=valid_pixel_data)
+    etag = (await client.get("/api/tiles/5/5")).headers["etag"]
+
+    r = await client.get("/api/tiles/5/5", headers={"If-None-Match": etag})
+    assert r.status_code == 304
+    assert r.content == b""
+
+
+async def test_get_tile_etag_changes_when_pixels_change(
+    client, valid_pixel_data, white_pixel_data
+):
+    """A stale validator is worse than none — it would pin the old pixels."""
+    await client.put("/api/tiles/5/5", content=valid_pixel_data)
+    first = (await client.get("/api/tiles/5/5")).headers["etag"]
+
+    await client.put("/api/tiles/5/5", content=white_pixel_data)
+    r = await client.get("/api/tiles/5/5", headers={"If-None-Match": first})
+
+    assert r.status_code == 200, "an edited tile must not answer 304 to the old tag"
+    assert r.content == white_pixel_data
+    assert r.headers["etag"] != first
+
+
+async def test_get_tile_accepts_weak_and_multiple_etags(client, valid_pixel_data):
+    """CDNs weaken validators and browsers may send a list."""
+    await client.put("/api/tiles/5/5", content=valid_pixel_data)
+    etag = (await client.get("/api/tiles/5/5")).headers["etag"]
+
+    r = await client.get(
+        "/api/tiles/5/5", headers={"If-None-Match": f'"other", W/{etag}'}
+    )
+    assert r.status_code == 304
 
 
 async def test_get_tile_info_exists(client, valid_pixel_data):

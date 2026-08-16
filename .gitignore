@@ -48,3 +48,6 @@ frontend/dist/
 
 # Cursor (editor-specific, plans are internal)
 .cursor/
+
+# Claude Code (editor-specific: local launch config, settings)
+.claude/

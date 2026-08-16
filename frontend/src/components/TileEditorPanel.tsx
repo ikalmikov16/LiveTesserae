@@ -255,11 +255,9 @@ export function TileEditorPanel({
   const handleClose = useCallback(async () => {
     if (isSaving || !tile) return;
 
-    // Clear preview immediately
-    onPreviewChange?.(null);
-
     // If no changes, just close immediately
     if (!hasChanges) {
+      onPreviewChange?.(null);
       onClose();
       return;
     }
@@ -270,6 +268,12 @@ export function TileEditorPanel({
     const saved = await saveToTile(tile);
 
     if (saved) {
+      // Only now is the preview safe to drop: the save handler has written the
+      // pixels into the canvas cache. Clearing it up front, as this used to,
+      // uncovered the tile's pre-edit pixels for as long as the save took —
+      // and left them showing for good if the update never came back.
+      onPreviewChange?.(null);
+
       // Show saved toast briefly - use flushSync to force immediate render
       flushSync(() => {
         setShowSavedToast(true);
@@ -280,10 +284,12 @@ export function TileEditorPanel({
         onClose();
       }, 800);
     } else if (saved === false) {
-      // Error occurred
+      // Save failed and the editor stays open — keep the preview on the canvas
+      // so the artwork is still visible while the user retries.
       setIsSaving(false);
     } else {
       // No changes (shouldn't reach here, but handle gracefully)
+      onPreviewChange?.(null);
       setIsSaving(false);
       onClose();
     }

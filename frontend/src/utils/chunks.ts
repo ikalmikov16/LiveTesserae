@@ -1,6 +1,9 @@
-import { MOSAIC_CONFIG } from "../config";
+import { MAX_SUBSCRIBED_CHUNKS, MOSAIC_CONFIG } from "../config";
 
 const { TILE_SIZE, CHUNK_SIZE, GRID_WIDTH, GRID_HEIGHT } = MOSAIC_CONFIG;
+
+// World pixels along one edge of a chunk
+const CHUNK_WORLD_SIZE = CHUNK_SIZE * TILE_SIZE;
 
 // Maximum chunk coordinates (0-indexed)
 const MAX_CHUNK_X = Math.ceil(GRID_WIDTH / CHUNK_SIZE) - 1;
@@ -52,6 +55,40 @@ export function getVisibleChunks(
   }
 
   return chunks;
+}
+
+/**
+ * Trim a set of visible chunks to what one connection may actually hold,
+ * keeping the ones nearest the viewport centre.
+ *
+ * This must happen BEFORE diffing against the current subscriptions. The server
+ * caps each connection at MAX_SUBSCRIBED_CHUNKS and drops the rest, so sending
+ * more means the client's idea of its subscriptions silently diverges from the
+ * server's — and the next diff then unsubscribes from chunks the server holds
+ * while subscribing to nothing.
+ *
+ * @param chunks - Visible chunk IDs ("cx:cy")
+ * @param centerX - Viewport centre X in world pixels
+ * @param centerY - Viewport centre Y in world pixels
+ * @param max - Cap (defaults to the server's limit)
+ * @returns At most `max` chunk IDs, nearest the centre first
+ */
+export function selectSubscribableChunks(
+  chunks: string[],
+  centerX: number,
+  centerY: number,
+  max: number = MAX_SUBSCRIBED_CHUNKS
+): string[] {
+  if (chunks.length <= max) return chunks;
+
+  const distance = (chunkId: string): number => {
+    const [cx, cy] = chunkId.split(":").map(Number);
+    const dx = (cx + 0.5) * CHUNK_WORLD_SIZE - centerX;
+    const dy = (cy + 0.5) * CHUNK_WORLD_SIZE - centerY;
+    return dx * dx + dy * dy;
+  };
+
+  return [...chunks].sort((a, b) => distance(a) - distance(b)).slice(0, max);
 }
 
 /**

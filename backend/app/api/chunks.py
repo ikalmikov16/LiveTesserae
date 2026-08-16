@@ -11,10 +11,10 @@ parameterized routes (like /{cx}/{cy}) to avoid routing conflicts.
 
 Rendering policy: no request ever renders an image that already exists in
 storage. A stale overview is served as-is and refreshed out of band, because
-rendering it costs a 5000x5000 (~75 MB) decode and a burst of landing-page
-loads after an edit could hold several of those at once and exhaust the
-container. Renders only happen in-request when there is nothing to serve at
-all, and even then only one at a time process-wide.
+rendering it costs a full-size decode and a burst of landing-page loads after an
+edit could hold several of those at once and exhaust the container. Renders only
+happen in-request when there is nothing to serve at all, and even then only one
+at a time process-wide.
 """
 
 import asyncio
@@ -23,7 +23,7 @@ import logging
 from fastapi import APIRouter, Response, HTTPException
 
 from app.config import settings
-from app.services import storage, chunk_renderer
+from app.services import storage, chunk_renderer, overview
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +36,12 @@ _overview_render_task: asyncio.Task | None = None
 _chunk_render_tasks: dict[tuple[int, int], asyncio.Task] = {}
 _single_flight_lock = asyncio.Lock()
 
-# Background overview refreshes, tracked so they survive GC and can be drained.
-_refresh_tasks: set[asyncio.Task] = set()
-
 
 def _reset_render_state() -> None:
     """Clear single-flight state. Used by tests between cases."""
     global _overview_render_task
     _overview_render_task = None
     _chunk_render_tasks.clear()
-    _refresh_tasks.clear()
 
 
 async def _render_and_save_overview() -> bytes:
@@ -100,29 +96,6 @@ async def _chunk_single_flight(cx: int, cy: int) -> bytes:
     return await _shielded(task)
 
 
-def _schedule_overview_refresh() -> None:
-    """
-    Refresh a stale overview out of band.
-
-    Skipped while a render is already in flight — during a normal tile save the
-    permit is held for exactly the window in which the overview is marked
-    stale, so without this guard every concurrent request would queue a
-    redundant full render behind it.
-    """
-    if chunk_renderer.render_semaphore.locked():
-        return
-
-    async def _refresh() -> None:
-        try:
-            await _overview_single_flight()
-        except Exception as e:
-            logger.warning(f"Background overview refresh failed: {e}")
-
-    task = asyncio.create_task(_refresh())
-    _refresh_tasks.add(task)
-    task.add_done_callback(_refresh_tasks.discard)
-
-
 # =============================================================================
 # Overview routes (Level 0) - MUST come before parameterized routes
 # =============================================================================
@@ -150,10 +123,12 @@ async def get_mosaic_overview():
                 status_code=503, detail="Overview is being generated, retry shortly"
             )
     elif await storage.is_overview_stale():
-        # Refresh in the background. Also self-heals the case where chunks were
-        # rendered offline (init_mosaic.py / render_chunks.py --chunks-only) and
-        # no tile save will ever arrive to rebuild the overview.
-        _schedule_overview_refresh()
+        # Nudge the coalescer rather than rendering here. It rebuilds at most
+        # once per window and owns the permit, so a burst of landing-page loads
+        # cannot queue a full render each. Also self-heals the case where chunks
+        # were rendered offline (init_mosaic.py / render_chunks.py --chunks-only)
+        # and no tile save will ever arrive to rebuild the overview.
+        overview.request_rebuild()
 
     version = await storage.get_overview_version()
 

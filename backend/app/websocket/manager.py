@@ -92,6 +92,14 @@ class ConnectionManager:
             0, settings.ws_max_subscriptions - len(self.subscriptions[websocket])
         )
         if len(chunk_ids) > remaining:
+            # Loud on purpose: a client that thinks it subscribed to chunks the
+            # server dropped will diff against its own list next time and
+            # unsubscribe from everything the server actually held.
+            logger.warning(
+                f"Subscription cap reached ({settings.ws_max_subscriptions}): "
+                f"dropping {len(chunk_ids) - remaining} of {len(chunk_ids)} "
+                "requested chunks"
+            )
             chunk_ids = chunk_ids[:remaining]
             if not chunk_ids:
                 return

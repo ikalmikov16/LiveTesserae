@@ -104,6 +104,7 @@ def validate_pixel_data(data: bytes) -> None:
     },
 )
 async def get_tile(
+    request: Request,
     x: int = Path(ge=0, lt=settings.grid_width, description="X coordinate"),
     y: int = Path(ge=0, lt=settings.grid_height, description="Y coordinate"),
 ):
@@ -112,18 +113,39 @@ async def get_tile(
 
     Returns 3072 bytes of RGB data (32×32×3, row-major order).
     Returns 404 if tile is in default (white) state.
+
+    Cached by validator, not by age. A tile URL has no version in it and its
+    contents change whenever anyone paints, so the old one-year `max-age` was
+    only survivable because the client asked for `no-store` and threw the
+    caching away. Put a CDN in front of `/api` with that combination and every
+    visitor gets pixels frozen for a year. `no-cache` still allows the browser
+    and the CDN to store the body — it just requires a revalidation first, which
+    the ETag turns into a cheap 304.
     """
     validate_coordinates(x, y)
 
-    pixel_data = await tile_service.get_tile_pixel_data(x, y)
+    result = await tile_service.get_tile_pixel_data_with_version(x, y)
 
-    if pixel_data is None:
+    if result is None:
         raise HTTPException(status_code=404, detail="Tile not found (is default)")
+
+    pixel_data, version = result
+    etag = f'"tile_{x}_{y}_v{version}"'
+    headers = {"Cache-Control": "no-cache, must-revalidate", "ETag": etag}
+
+    # If-None-Match may carry a list, and a CDN may weaken the tag.
+    if_none_match = request.headers.get("if-none-match", "")
+    if any(
+        candidate.strip().removeprefix("W/") == etag
+        for candidate in if_none_match.split(",")
+        if candidate.strip()
+    ):
+        return Response(status_code=304, headers=headers)
 
     return Response(
         content=pixel_data,
         media_type="application/octet-stream",
-        headers={"Cache-Control": "public, max-age=31536000"},
+        headers=headers,
     )
 
 

@@ -179,7 +179,12 @@ class TileLoader {
   private async fetchTile(x: number, y: number, signal: AbortSignal): Promise<Uint8Array | null> {
     const response = await fetch(`${API_BASE_URL}/api/tiles/${x}/${y}`, {
       signal,
-      cache: "no-store", // Always fetch fresh data to avoid showing stale tiles
+      // "no-cache", not "no-store": still never shows a stale tile, because the
+      // browser always revalidates — but the server answers 304 from the tile's
+      // version ETag when nothing changed, instead of resending 3072 bytes.
+      // "no-store" skipped the cache entirely and made every revalidation a
+      // full download.
+      cache: "no-cache",
     });
 
     if (response.status === 404) {

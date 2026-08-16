@@ -21,6 +21,11 @@ export function useWebSocket({
   reconnectDelay = 2000,
 }: UseWebSocketOptions) {
   const [isConnected, setIsConnected] = useState(false);
+  // Incremented on every successful open. Consumers watch this rather than
+  // `isConnected` to re-subscribe: the server discards a connection's
+  // subscription set on close, and a drop-and-reopen inside one React batch
+  // leaves `isConnected` at true the whole time, so a boolean would never fire.
+  const [connectionEpoch, setConnectionEpoch] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
@@ -97,6 +102,7 @@ export function useWebSocket({
         retriesRef.current = 0;
         console.log("WebSocket connected");
         setIsConnected(true);
+        setConnectionEpoch((n) => n + 1);
       };
 
       ws.onclose = (event: CloseEvent) => {
@@ -191,5 +197,5 @@ export function useWebSocket({
     };
   }, [reconnectDelay]); // Only reconnectDelay as dependency
 
-  return { isConnected, subscribe, unsubscribe };
+  return { isConnected, connectionEpoch, subscribe, unsubscribe };
 }

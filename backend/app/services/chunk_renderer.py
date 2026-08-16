@@ -1,7 +1,7 @@
 """
 Chunk rendering service for multi-level pyramid.
 
-Level 0: Mosaic overview (5000x5000) - 5 pixels per tile
+Level 0: Mosaic overview (2048x2048) - 2.048 pixels per tile
 Level 1: Chunk previews (2048x2048 each) - 20.48 pixels per tile
 Level 2: Individual tiles (32x32 each) - stored as RGB bytes in database
 """
@@ -23,24 +23,48 @@ logger = logging.getLogger(__name__)
 
 # Rendering sizes - high quality for smoother transitions between zoom levels
 CHUNK_PREVIEW_SIZE = 2048  # pixels per chunk image (20.48 px/tile)
-MOSAIC_PREVIEW_SIZE = 5000  # pixels for full overview (5 px/tile)
+# The overview was 5000x5000 and its re-encode cost 1716 ms — 9.4x the chunk
+# render, and the single biggest cost in a tile save. Zoom level 0 only engages
+# below 3 px/tile, so the overview is never displayed wider than ~3000 px:
+# 5000x5000 was ~2.8x more pixels than can ever reach a screen. Measured ~6x
+# cheaper in CPU and bytes at 2048, with no visible quality loss.
+MOSAIC_PREVIEW_SIZE = 2048  # pixels for full overview (2.048 px/tile)
+
+# WebP encode settings, shared by every render path.
+#
+# method=0 is the fastest of libwebp's 0-6 effort levels: measured 1222 ms ->
+# 473 ms on the old 5000x5000 overview, for roughly 40 KB more per image. Encode
+# time is the whole bottleneck of this pipeline — both encodes in a tile save sit
+# inside the single render permit below — so the trade is strongly worth it.
+# Quality is unchanged; raise WEBP_METHOD if bytes ever matter more than latency.
+WEBP_QUALITY = 90
+WEBP_METHOD = 0
 
 # Thread pool for CPU-bound PIL operations (prevents blocking the event loop)
 _image_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pil_worker")
 
-# Serialises every image render in the process. One overview decode is a
-# 5000x5000 RGB buffer (~75 MB) and a 1 GB Fargate task cannot hold several at
-# once, so all render paths — the background task after a tile save and the
-# on-demand renders in the chunks API — share this single permit.
+# Serialises every image render in the process, for two independent reasons.
+#
+# Correctness: the critical section has to span read -> composite -> save.
+# Releasing between the render call and the caller's save lets a second writer
+# read the same pre-image and clobber the first writer's tile.
+#
+# Memory: a 2048x2048 RGB buffer is ~12.6 MB, and decode + resize + encode holds
+# several at once. A 1 GB Fargate task cannot afford concurrent renders, so all
+# render paths — the background task after a tile save, the coalesced overview
+# rebuild, and the on-demand renders in the chunks API — share this one permit.
 #
 # MUST be acquired only at the OUTERMOST call site, never inside the render
 # helpers below: asyncio.Semaphore is not reentrant, so a nested acquire
 # deadlocks the process permanently (no timeout, no self-healing).
-#
-# The critical section has to span read -> composite -> save. Releasing between
-# the render call and the caller's save lets a second writer read the same
-# pre-image and clobber the first writer's tile.
 render_semaphore = asyncio.Semaphore(1)
+
+
+def _encode_webp(img: Image.Image) -> bytes:
+    """Encode a PIL image to WebP bytes with the shared settings."""
+    buffer = io.BytesIO()
+    img.save(buffer, format="WEBP", quality=WEBP_QUALITY, method=WEBP_METHOD)
+    return buffer.getvalue()
 
 
 def rgb_bytes_to_image(pixel_data: bytes) -> Image.Image:
@@ -96,7 +120,7 @@ def _get_chunk_bounds_in_overview(cx: int, cy: int) -> tuple[int, int, int, int]
     Returns: (x, y, width, height)
     """
     chunks_per_row = settings.grid_width // settings.chunk_size  # 10
-    pixels_per_chunk = MOSAIC_PREVIEW_SIZE / chunks_per_row  # 400
+    pixels_per_chunk = MOSAIC_PREVIEW_SIZE / chunks_per_row  # 204.8
 
     x1 = round(cx * pixels_per_chunk)
     y1 = round(cy * pixels_per_chunk)
@@ -141,10 +165,31 @@ def _update_chunk_tile_sync(
         white = Image.new("RGB", (tw, th), (255, 255, 255))
         chunk_img.paste(white, (px, py))
 
-    buffer = io.BytesIO()
-    chunk_img.save(buffer, format="WEBP", quality=90)
+    return _encode_webp(chunk_img)
 
-    return buffer.getvalue()
+
+async def load_or_render_chunk_image(cx: int, cy: int) -> bytes:
+    """
+    Return the stored chunk image, rebuilding it from the database if missing.
+
+    Never let a caller composite onto fresh white when the image is absent:
+    the chunk holds up to 10,000 tiles that only exist in Postgres, and saving
+    a white-based composite erases every one of them from Levels 0 and 1 —
+    permanently, because a chunk is only rebuilt when its image is *missing*
+    and a wrong one now exists. Verified: 6 drawn tiles wiped by one unrelated
+    edit against an empty image store, which is exactly a fresh deploy.
+
+    The caller must already hold render_semaphore (the permit is not reentrant).
+    """
+    existing = await storage.get_chunk_image(cx, cy)
+    if existing is not None:
+        return existing
+
+    logger.info(
+        f"Chunk ({cx}, {cy}) image missing, rebuilding from database "
+        "instead of compositing onto white"
+    )
+    return await render_chunk(cx, cy)
 
 
 async def update_chunk_tile(
@@ -164,8 +209,8 @@ async def update_chunk_tile(
     Returns:
         Updated WebP image data as bytes
     """
-    # Load existing chunk from storage (async I/O)
-    existing_chunk = await storage.get_chunk_image(cx, cy)
+    # Load existing chunk from storage, or rebuild it from the database (async I/O)
+    existing_chunk = await load_or_render_chunk_image(cx, cy)
 
     # Run CPU-bound PIL operations in thread pool
     result = await run_in_thread(
@@ -212,10 +257,7 @@ def _render_chunk_sync(
                     f"Failed to render tile {row['tile_id']} into chunk: {e}"
                 )
 
-    buffer = io.BytesIO()
-    chunk_img.save(buffer, format="WEBP", quality=90)
-
-    return buffer.getvalue(), tiles_rendered
+    return _encode_webp(chunk_img), tiles_rendered
 
 
 async def render_chunk(cx: int, cy: int) -> bytes:
@@ -254,14 +296,21 @@ async def render_chunk(cx: int, cy: int) -> bytes:
     return result
 
 
-def _update_overview_chunk_sync(
-    existing_overview: bytes | None, cx: int, cy: int, chunk_data: bytes
+def _update_overview_chunks_sync(
+    existing_overview: bytes | None,
+    chunks: list[tuple[int, int, bytes]],
 ) -> bytes:
     """
-    Synchronous PIL operations for update_overview_chunk.
+    Synchronous PIL operations for update_overview_chunks.
     Runs in thread pool to avoid blocking the event loop.
+
+    Pastes every chunk into one decode of the overview, so coalescing N dirty
+    chunks costs one decode and one encode rather than N of each.
     """
-    # Load existing overview or create new white one
+    # Load existing overview or create new white one. Production callers go
+    # through update_overview_chunks(), which never passes None — a missing
+    # overview is fully re-rendered from the chunk images instead, or every
+    # chunk that is not in this batch would be erased.
     if existing_overview:
         overview_img = Image.open(io.BytesIO(existing_overview)).convert("RGB")
     else:
@@ -269,29 +318,36 @@ def _update_overview_chunk_sync(
             "RGB", (MOSAIC_PREVIEW_SIZE, MOSAIC_PREVIEW_SIZE), (255, 255, 255)
         )
 
-    # Get exact bounds for this chunk in the overview
-    px, py, cw, ch = _get_chunk_bounds_in_overview(cx, cy)
+    for cx, cy, chunk_data in chunks:
+        # Get exact bounds for this chunk in the overview
+        px, py, cw, ch = _get_chunk_bounds_in_overview(cx, cy)
 
-    # Paste the updated chunk
-    chunk_img = Image.open(io.BytesIO(chunk_data)).convert("RGB")
-    chunk_img = chunk_img.resize((cw, ch), Image.Resampling.LANCZOS)
-    overview_img.paste(chunk_img, (px, py))
+        # Paste the updated chunk
+        chunk_img = Image.open(io.BytesIO(chunk_data)).convert("RGB")
+        chunk_img = chunk_img.resize((cw, ch), Image.Resampling.LANCZOS)
+        overview_img.paste(chunk_img, (px, py))
 
-    buffer = io.BytesIO()
-    overview_img.save(buffer, format="WEBP", quality=90)
-
-    return buffer.getvalue()
+    return _encode_webp(overview_img)
 
 
-async def update_overview_chunk(cx: int, cy: int, chunk_data: bytes) -> bytes:
+def _update_overview_chunk_sync(
+    existing_overview: bytes | None, cx: int, cy: int, chunk_data: bytes
+) -> bytes:
+    """Single-chunk form of _update_overview_chunks_sync."""
+    return _update_overview_chunks_sync(existing_overview, [(cx, cy, chunk_data)])
+
+
+async def update_overview_chunks(chunks: list[tuple[int, int, bytes]]) -> bytes:
     """
-    Incrementally update a single chunk in the overview image.
+    Incrementally update a batch of chunks in the overview image.
     Much faster than re-rendering the entire overview.
 
+    Falls back to a full re-render when no overview exists yet: pasting onto a
+    fresh white image would erase every chunk outside this batch, the Level-0
+    half of the cold-storage wipe (see load_or_render_chunk_image).
+
     Args:
-        cx: Chunk X coordinate
-        cy: Chunk Y coordinate
-        chunk_data: WebP image data for the chunk
+        chunks: (cx, cy, WebP image data) for each chunk to paste
 
     Returns:
         Updated WebP image data as bytes
@@ -299,12 +355,19 @@ async def update_overview_chunk(cx: int, cy: int, chunk_data: bytes) -> bytes:
     # Load existing overview from storage (async I/O)
     existing_overview = await storage.get_mosaic_overview()
 
+    if existing_overview is None:
+        logger.info(
+            "Overview image missing, re-rendering from all chunks "
+            "instead of compositing onto white"
+        )
+        return await render_mosaic_overview()
+
     # Run CPU-bound PIL operations in thread pool
     result = await run_in_thread(
-        _update_overview_chunk_sync, existing_overview, cx, cy, chunk_data
+        _update_overview_chunks_sync, existing_overview, chunks
     )
 
-    logger.debug(f"Updated chunk ({cx}, {cy}) in overview")
+    logger.debug(f"Updated {len(chunks)} chunk(s) in overview")
 
     return result
 
@@ -336,17 +399,14 @@ def _render_mosaic_overview_sync(
                     f"Failed to render chunk ({cx}, {cy}) into overview: {e}"
                 )
 
-    buffer = io.BytesIO()
-    mosaic_img.save(buffer, format="WEBP", quality=90)
-
-    return buffer.getvalue(), chunks_rendered
+    return _encode_webp(mosaic_img), chunks_rendered
 
 
 async def render_mosaic_overview() -> bytes:
     """
-    Render Level 0 by compositing all Level 1 chunk images into 5000x5000.
+    Render Level 0 by compositing all Level 1 chunk images into 2048x2048.
     Use this for initial rendering or full re-renders (e.g., from render_chunks.py).
-    For single chunk updates, use update_overview_chunk() instead.
+    For incremental chunk updates, use update_overview_chunks() instead.
 
     Returns:
         WebP image data as bytes

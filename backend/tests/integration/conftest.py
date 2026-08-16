@@ -88,6 +88,18 @@ def clean_render_state():
     chunks_api._reset_render_state()
 
 
+@pytest.fixture(autouse=True)
+def clean_overview_coalescer():
+    """Reset the overview coalescer between tests.
+
+    Its loop is never started under the ASGI transport (no lifespan), so tests
+    drive it explicitly through drain_background_tasks().
+    """
+    from app.services import overview
+
+    overview._reset_state()
+
+
 @pytest.fixture
 async def storage_dir(tmp_path, monkeypatch):
     """Isolated storage directory per test — patches settings.chunks_path.
@@ -124,17 +136,21 @@ async def client(storage_dir):
 
 
 async def drain_background_tasks():
-    """Wait for all pending background work to finish.
+    """Wait for all pending background work to finish, overview included.
 
-    Covers both the post-save chunk/overview renders scheduled by the tile
-    service and the out-of-band overview refreshes scheduled by the chunks API.
-    Loops because draining one set can schedule work in the other.
+    Covers the post-save chunk renders scheduled by the tile service, the
+    coalesced Level-0 rebuild (flushed here rather than waited on — the loop
+    does not run under the ASGI transport, and tests should not sleep out a
+    coalesce window), and the broadcasts either one schedules. Loops because
+    draining one set can schedule work in the others.
     """
-    from app.api.chunks import _refresh_tasks
+    from app.services import overview
     from app.services.tiles import _background_tasks
 
     for _ in range(10):
-        pending = list(_background_tasks) + list(_refresh_tasks)
-        if not pending:
+        pending = list(_background_tasks) + list(overview._background_tasks)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+            continue
+        if not await overview.flush_pending():
             return
-        await asyncio.gather(*pending, return_exceptions=True)

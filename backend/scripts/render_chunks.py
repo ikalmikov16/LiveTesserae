@@ -51,7 +51,9 @@ DEFAULT_WORKERS = min(8, os.cpu_count() or 4)
 
 # These MUST match backend/app/services/chunk_renderer.py
 CHUNK_PREVIEW_SIZE = 2048  # pixels per chunk image (must match backend!)
-MOSAIC_PREVIEW_SIZE = 5000  # pixels for full overview (must match backend!)
+MOSAIC_PREVIEW_SIZE = 2048  # pixels for full overview (must match backend!)
+WEBP_QUALITY = 90  # must match backend!
+WEBP_METHOD = 0  # must match backend!
 
 
 def rgb_bytes_to_image(pixel_data: bytes) -> Image.Image:
@@ -132,9 +134,9 @@ async def render_chunk_optimized(pool, cx: int, cy: int) -> bytes:
                 tile_img = tile_img.resize((tw, th), Image.Resampling.LANCZOS)
                 chunk_img.paste(tile_img, (px, py))
 
-    # Convert to WebP (same quality as backend)
+    # Convert to WebP (same settings as backend)
     buffer = io.BytesIO()
-    chunk_img.save(buffer, format="WEBP", quality=90)
+    chunk_img.save(buffer, format="WEBP", quality=WEBP_QUALITY, method=WEBP_METHOD)
     return buffer.getvalue()
 
 
@@ -226,7 +228,7 @@ async def render_overview_optimized(pool) -> bytes:
     Uses same logic as chunk_renderer.py for consistency.
     """
     chunks_per_row = settings.grid_width // settings.chunk_size  # 10
-    pixels_per_chunk = MOSAIC_PREVIEW_SIZE / chunks_per_row  # 500
+    pixels_per_chunk = MOSAIC_PREVIEW_SIZE / chunks_per_row  # 204.8
 
     overview_img = Image.new(
         "RGB", (MOSAIC_PREVIEW_SIZE, MOSAIC_PREVIEW_SIZE), (255, 255, 255)
@@ -252,7 +254,7 @@ async def render_overview_optimized(pool) -> bytes:
 
     # Convert to WebP
     buffer = io.BytesIO()
-    overview_img.save(buffer, format="WEBP", quality=90)
+    overview_img.save(buffer, format="WEBP", quality=WEBP_QUALITY, method=WEBP_METHOD)
     return buffer.getvalue()
 
 
@@ -288,12 +290,13 @@ async def main(
     chunks_only: bool = False,
     overview_only: bool = False,
     workers: int = DEFAULT_WORKERS,
+    skip_existing: bool = False,
 ):
     """Main entry point."""
     storage.ensure_storage_directories()
 
     if not overview_only:
-        await render_all_chunks(workers=workers)
+        await render_all_chunks(workers=workers, skip_existing=skip_existing)
         print()
 
     if not chunks_only:
@@ -329,5 +332,6 @@ if __name__ == "__main__":
             chunks_only=args.chunks_only,
             overview_only=args.overview_only,
             workers=args.workers,
+            skip_existing=args.skip_existing,
         )
     )

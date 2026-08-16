@@ -17,6 +17,15 @@ MAX_CHUNKS_PER_MESSAGE = 50
 
 def validate_chunk_ids(chunks: list) -> list[str]:
     """Filter chunk IDs to valid format and grid bounds."""
+    if len(chunks) > MAX_CHUNKS_PER_MESSAGE:
+        # Silent truncation here is how the client and server drifted into
+        # disagreeing about what was subscribed, which left clients showing
+        # "Live" with no subscriptions at all. Never drop chunks quietly.
+        logger.warning(
+            f"Client sent {len(chunks)} chunks in one message, "
+            f"keeping the first {MAX_CHUNKS_PER_MESSAGE}"
+        )
+
     max_cx = settings.grid_width // settings.chunk_size
     max_cy = settings.grid_height // settings.chunk_size
     valid = []

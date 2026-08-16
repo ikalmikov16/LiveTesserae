@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     tile_size: int = 32
     chunk_size: int = 100  # 100x100 tiles per chunk
 
+    # How long the Level-0 overview rebuild waits to collect dirty chunks.
+    # Every tile save used to re-encode the overview, capping the site at ~0.5
+    # saves/sec; one rebuild per window makes that cost independent of the edit
+    # rate, at the price of up to this much staleness at zoom level 0.
+    overview_coalesce_seconds: float = 5.0
+
     # Storage mode: "local" or "s3"
     storage_mode: str = "local"
 

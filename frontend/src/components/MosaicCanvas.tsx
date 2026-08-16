@@ -1,12 +1,8 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from "react";
-import { MOSAIC_CONFIG } from "../config";
+import { MOSAIC_CONFIG, getRenderLevel } from "../config";
 import { useViewport } from "../hooks/useViewport";
-import {
-  loadChunkImage,
-  loadOverviewImage,
-  getOverviewVersion,
-  getChunkVersion,
-} from "../api/chunks";
+import { useOverviewImage } from "../hooks/useOverviewImage";
+import { loadChunkImage, getChunkVersion } from "../api/chunks";
 import { tileLoader, TILE_CANCELLED } from "../utils/tileLoader";
 import { rgbToImageData } from "../utils/pixels";
 import { LRUCache } from "../utils/lruCache";
@@ -22,10 +18,6 @@ const { TILE_SIZE, GRID_WIDTH, GRID_HEIGHT, CHUNK_SIZE } = MOSAIC_CONFIG;
 const MOSAIC_WIDTH = GRID_WIDTH * TILE_SIZE;
 const MOSAIC_HEIGHT = GRID_HEIGHT * TILE_SIZE;
 const CHUNKS_PER_ROW = GRID_WIDTH / CHUNK_SIZE; // 10
-
-// Zoom thresholds for level selection
-const LEVEL_0_THRESHOLD = 3; // tile < 3px = show overview
-const LEVEL_1_THRESHOLD = 24; // tile < 24px = show chunks
 
 // Grid shows at Level 2 when tiles are at least this size
 const GRID_THRESHOLD = 19; // ~60% zoom
@@ -128,16 +120,23 @@ export function MosaicCanvas({
   const lastMousePos = useRef({ x: 0, y: 0 });
   const dragStartPos = useRef({ x: 0, y: 0 });
 
+  // Set once the user pans, zooms or navigates, after which the viewport is
+  // theirs and a resize must not yank it back to fit-to-screen. Explicitly
+  // clicking Fit to screen deliberately does not set it.
+  const hasUserAdjustedView = useRef(false);
+  const markViewAdjusted = useCallback(() => {
+    hasUserAdjustedView.current = true;
+  }, []);
+
   // Handle external navigation requests (from MiniMap)
   useEffect(() => {
     if (navigateTo) {
+      markViewAdjusted();
       setOffset(navigateTo.x, navigateTo.y);
     }
-  }, [navigateTo, setOffset]);
+  }, [navigateTo, setOffset, markViewAdjusted]);
 
   // Multi-level rendering state
-  const [mosaicOverview, setMosaicOverview] = useState<HTMLImageElement | null>(null);
-  const overviewLoadedRef = useRef(false); // Track if overview load has been attempted
   // Use LRU cache for chunk images to prevent unbounded memory growth
   const chunkCacheRef = useRef(new LRUCache<string, ChunkCache>(MAX_CHUNK_CACHE_SIZE));
   const loadingChunksRef = useRef<Set<string>>(new Set());
@@ -145,11 +144,15 @@ export function MosaicCanvas({
 
   // Determine render level based on zoom
   const screenTileSize = TILE_SIZE * zoom;
-  const renderLevel = useMemo(() => {
-    if (screenTileSize < LEVEL_0_THRESHOLD) return 0;
-    if (screenTileSize < LEVEL_1_THRESHOLD) return 1;
-    return 2;
-  }, [screenTileSize]);
+  const renderLevel = useMemo(() => getRenderLevel(screenTileSize), [screenTileSize]);
+
+  // Level 0 image, refreshed only while it is actually the visible layer
+  const mosaicOverview = useOverviewImage({
+    renderLevel,
+    overviewUpdate,
+    onOverviewUpdateProcessed,
+    onOverviewLoad,
+  });
 
   // Create a key for the tile coordinates
   const getTileKey = (x: number, y: number) => `${x}:${y}`;
@@ -207,6 +210,13 @@ export function MosaicCanvas({
   // Track tiles being loaded and tiles that don't exist (404)
   const loadingTilesRef = useRef<Set<string>>(new Set());
   const nonExistentTilesRef = useRef<Set<string>>(new Set());
+  // Cached tiles known to be out of date: still drawn, but refetched on the
+  // next loader pass.
+  const staleTilesRef = useRef<Set<string>>(new Set());
+  // Bumped when tiles are invalidated, to re-run the loader. Kept separate from
+  // tileDataVersion, which changes on every single tile arrival and would
+  // restart the loader's debounce continuously.
+  const [tileInvalidation, setTileInvalidation] = useState(0);
 
   // Animation state for selection indicator pulse
   const [selectionPulse, setSelectionPulse] = useState(0);
@@ -481,6 +491,42 @@ export function MosaicCanvas({
     const { cx, cy, version } = chunkUpdate;
     const chunkKey = `${cx}_${cy}`;
 
+    // Mark this chunk's Level-2 tiles for revalidation. A tile is otherwise
+    // fetched once and only ever overwritten by a tile_update echo, and sharp
+    // tiles are drawn on top of the chunk image — so one missed echo left
+    // another user's pre-edit pixels on screen indefinitely, with the chunk's
+    // own self-heal masked underneath.
+    //
+    // Marked, not evicted: the cached pixels keep drawing until the refetch
+    // lands. Dropping them would fall back to the upscaled chunk image and blur
+    // every tile in view for a moment after each edit — including the editor's
+    // own, immediately after they saved it.
+    const inThisChunk = (key: string): boolean => {
+      const [tileX, tileY] = key.split(":").map(Number);
+      return Math.floor(tileX / CHUNK_SIZE) === cx && Math.floor(tileY / CHUNK_SIZE) === cy;
+    };
+
+    let invalidated = 0;
+    tileDataRef.current.forEach((_rgb, key) => {
+      if (inThisChunk(key)) {
+        staleTilesRef.current.add(key);
+        invalidated++;
+      }
+    });
+
+    // A tile created since we last looked would still be flagged 404 here.
+    // Nothing is cached for those, so clearing the flag is free.
+    for (const key of nonExistentTilesRef.current) {
+      if (inThisChunk(key)) {
+        nonExistentTilesRef.current.delete(key);
+        invalidated++;
+      }
+    }
+
+    if (invalidated > 0) {
+      setTileInvalidation((n) => n + 1); // Re-run the tile loader
+    }
+
     // Load the updated chunk image
     const loadUpdatedChunk = async () => {
       try {
@@ -497,54 +543,12 @@ export function MosaicCanvas({
     loadUpdatedChunk();
   }, [chunkUpdate, onChunkUpdateProcessed]);
 
-  // Process overview updates (from WebSocket) - Level 0 overview image
-  useEffect(() => {
-    if (!overviewUpdate) return;
-
-    const { version } = overviewUpdate;
-
-    // Load the updated overview image
-    const loadUpdatedOverview = async () => {
-      try {
-        const img = await loadOverviewImage(version);
-        setMosaicOverview(img);
-        onOverviewLoad?.(img);
-        console.log(`Overview reloaded with version ${version}`);
-      } catch (error) {
-        console.error("Failed to reload overview:", error);
-      } finally {
-        onOverviewUpdateProcessed?.();
-      }
-    };
-    loadUpdatedOverview();
-  }, [overviewUpdate, onOverviewUpdateProcessed, onOverviewLoad]);
-
   // Track if canvas has been initialized
   const [isCanvasReady, setIsCanvasReady] = useState(false);
 
   // RAF batching - prevent multiple drawCanvas calls per frame
   const rafIdRef = useRef<number | null>(null);
   const pendingDrawRef = useRef(false);
-
-  // Load overview once on mount (for initial page load)
-  useEffect(() => {
-    if (overviewLoadedRef.current) return;
-    overviewLoadedRef.current = true;
-
-    const loadOverview = async () => {
-      try {
-        const versionInfo = await getOverviewVersion();
-        const img = await loadOverviewImage(versionInfo.version);
-        setMosaicOverview(img);
-        onOverviewLoad?.(img);
-      } catch (error) {
-        console.error("Failed to load overview:", error);
-      }
-    };
-
-    loadOverview();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally runs once on mount
-  }, []);
 
   // Load missing or outdated chunks when at Level 1 or Level 2 (used as fallback preview)
   // Debounced to prevent excessive requests during fast panning
@@ -639,12 +643,16 @@ export function MosaicCanvas({
 
       const tileCache = tileDataRef.current;
 
+      const stale = staleTilesRef.current;
+
       sortedTiles.forEach(({ x, y }) => {
         const key = getTileKey(x, y);
-        // Skip if already loaded, loading, or known to not exist
-        if (tileCache.has(key) || loading.has(key) || nonExistent.has(key)) return;
+        // Skip if already loading, or already loaded and still believed current
+        if (loading.has(key)) return;
+        if (!stale.has(key) && (tileCache.has(key) || nonExistent.has(key))) return;
 
         loading.add(key);
+        stale.delete(key);
 
         tileLoader
           .loadTile(x, y)
@@ -652,13 +660,20 @@ export function MosaicCanvas({
             loading.delete(key);
 
             if (result === TILE_CANCELLED) {
-              // Request was cancelled (e.g., during panning) - will retry on next render
+              // Cancelled (e.g. during panning). Restore the revalidation mark,
+              // or a stale tile would never be refetched.
+              if (tileCache.has(key)) stale.add(key);
               return;
             }
 
             if (result === null) {
               // Tile doesn't exist (404) - mark as non-existent
               nonExistent.add(key);
+              // It may have existed a moment ago; don't keep drawing a tile the
+              // server has since reset.
+              if (tileCache.delete(key)) {
+                setTileDataVersion((n) => n + 1);
+              }
               return;
             }
 
@@ -669,6 +684,7 @@ export function MosaicCanvas({
           .catch(() => {
             // Request failed, just remove from loading (will retry)
             loading.delete(key);
+            if (tileCache.has(key)) stale.add(key);
           });
       });
     }, 50); // 50ms debounce
@@ -678,6 +694,7 @@ export function MosaicCanvas({
     renderLevel,
     getVisibleTiles,
     // tileDataVersion not needed - we check the ref directly
+    tileInvalidation, // but a chunk update marks tiles stale, which must refetch
     offsetX,
     offsetY,
     zoom,
@@ -704,13 +721,18 @@ export function MosaicCanvas({
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Reset view to fit-to-screen on initial load
-  const hasInitialized = useRef(false);
+  // Keep the mosaic fitted to the canvas until the user takes control.
+  //
+  // This used to run exactly once, against whatever size the canvas happened to
+  // measure first. Any window that settled a moment after load — a preview
+  // pane, a restored window, a phone rotating — left the mosaic stuck at that
+  // first tiny zoom, and the only way out was finding the Fit to screen button.
+  // resetView's identity changes with the canvas size, so this re-fits on every
+  // resize until a pan or zoom sets hasUserAdjustedView.
   useEffect(() => {
-    if (isCanvasReady && !hasInitialized.current) {
-      hasInitialized.current = true;
-      resetView();
-    }
+    if (!isCanvasReady) return;
+    if (hasUserAdjustedView.current) return;
+    resetView();
   }, [isCanvasReady, resetView]);
 
   // Schedule a redraw using requestAnimationFrame
@@ -751,6 +773,7 @@ export function MosaicCanvas({
       const deltaX = e.clientX - lastMousePos.current.x;
       const deltaY = e.clientY - lastMousePos.current.y;
       lastMousePos.current = { x: e.clientX, y: e.clientY };
+      markViewAdjusted();
       pan(deltaX, deltaY);
     };
 
@@ -762,7 +785,7 @@ export function MosaicCanvas({
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [isDragging, pan]);
+  }, [isDragging, pan, markViewAdjusted]);
 
   // Wheel handler for zooming/panning (native event for passive: false)
   // - Trackpad pinch (ctrlKey=true): zoom
@@ -774,6 +797,7 @@ export function MosaicCanvas({
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
+      markViewAdjusted();
 
       const rect = canvas.getBoundingClientRect();
       const canvasX = e.clientX - rect.left;
@@ -797,7 +821,7 @@ export function MosaicCanvas({
 
     canvas.addEventListener("wheel", handleWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", handleWheel);
-  }, [zoomAt, pan]);
+  }, [zoomAt, pan, markViewAdjusted]);
 
   // Keyboard shortcut for grid toggle (G key)
   useEffect(() => {
@@ -823,6 +847,16 @@ export function MosaicCanvas({
   useEffect(() => {
     onViewportChange?.(offsetX, offsetY, zoom);
   }, [offsetX, offsetY, zoom, onViewportChange]);
+
+  // Zoom from the on-screen controls is a deliberate viewport choice; Fit to
+  // screen is not, so it keeps calling resetView directly.
+  const handleZoomChange = useCallback(
+    (newZoom: number) => {
+      markViewAdjusted();
+      setZoom(newZoom);
+    },
+    [setZoom, markViewAdjusted]
+  );
 
   // Mouse down handler for drag start
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -877,7 +911,7 @@ export function MosaicCanvas({
         zoom={zoom}
         minZoom={minZoom}
         maxZoom={maxZoom}
-        onZoomChange={setZoom}
+        onZoomChange={handleZoomChange}
         onReset={resetView}
         showGrid={showGrid}
         onToggleGrid={() => setShowGrid((prev) => !prev)}

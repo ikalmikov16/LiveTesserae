@@ -42,7 +42,8 @@ export async function saveTile(
  */
 export async function getTilePixels(x: number, y: number): Promise<Uint8Array | null> {
   const response = await fetch(`${API_BASE_URL}/api/tiles/${x}/${y}`, {
-    cache: "no-store",
+    // Revalidate every time, but let a 304 reuse the cached body. See tileLoader.
+    cache: "no-cache",
   });
 
   if (response.status === 404) {
@@ -64,7 +65,7 @@ export async function getTilePixels(x: number, y: number): Promise<Uint8Array | 
 export async function tileExists(x: number, y: number): Promise<boolean> {
   const response = await fetch(`${API_BASE_URL}/api/tiles/${x}/${y}`, {
     method: "HEAD",
-    cache: "no-store",
+    cache: "no-cache",
   });
 
   return response.ok;

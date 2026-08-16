@@ -5,9 +5,13 @@ import { TileEditorPanel } from "../components/TileEditorPanel";
 import { MiniMap } from "../components/MiniMap";
 import { saveTile } from "../api/tiles";
 import { useWebSocket } from "../hooks/useWebSocket";
-import { getVisibleChunks, diffChunkSubscriptions } from "../utils/chunks";
+import {
+  getVisibleChunks,
+  diffChunkSubscriptions,
+  selectSubscribableChunks,
+} from "../utils/chunks";
 import { base64ToUint8Array } from "../utils/pixels";
-import { MOSAIC_CONFIG } from "../config";
+import { MOSAIC_CONFIG, getRenderLevel } from "../config";
 import type {
   TileCoordinates,
   TileUpdateMessage,
@@ -53,6 +57,33 @@ export function MosaicEditor() {
 
   const subscribedChunksRef = useRef<string[]>([]);
   const subscriptionTimeoutRef = useRef<number | null>(null);
+  // Latest viewport, readable without making effects depend on every pan.
+  const viewportRef = useRef({ x: 0, y: 0, zoom: 0.02 });
+
+  /**
+   * Chunks this client should be subscribed to right now.
+   *
+   * Capped to what one connection may hold, because the server drops the
+   * excess silently. Empty at zoom level 0: the overview is a global broadcast,
+   * so subscribing to every visible chunk there buys nothing and would spend
+   * the whole budget on chunks the user cannot see detail in anyway.
+   */
+  const computeSubscriptionIntent = useCallback(
+    (offsetX: number, offsetY: number, zoom: number): string[] => {
+      if (getRenderLevel(TILE_SIZE * zoom) === 0) return [];
+
+      const visibleWidth = window.innerWidth / zoom;
+      const visibleHeight = window.innerHeight / zoom;
+      const visible = getVisibleChunks(offsetX, offsetY, visibleWidth, visibleHeight);
+
+      return selectSubscribableChunks(
+        visible,
+        offsetX + visibleWidth / 2,
+        offsetY + visibleHeight / 2
+      );
+    },
+    []
+  );
 
   const handleWebSocketTileUpdate = useCallback((message: TileUpdateMessage) => {
     const pixelData = base64ToUint8Array(message.pixels);
@@ -67,7 +98,7 @@ export function MosaicEditor() {
     setOverviewUpdate(message);
   }, []);
 
-  const { isConnected, subscribe, unsubscribe } = useWebSocket({
+  const { isConnected, connectionEpoch, subscribe, unsubscribe } = useWebSocket({
     onTileUpdate: handleWebSocketTileUpdate,
     onChunkUpdate: handleChunkUpdate,
     onOverviewUpdate: handleOverviewUpdate,
@@ -76,6 +107,7 @@ export function MosaicEditor() {
   const handleViewportChange = useCallback(
     (offsetX: number, offsetY: number, zoom: number) => {
       setViewportState({ x: offsetX, y: offsetY, zoom });
+      viewportRef.current = { x: offsetX, y: offsetY, zoom };
 
       if (subscriptionTimeoutRef.current) {
         clearTimeout(subscriptionTimeoutRef.current);
@@ -84,23 +116,45 @@ export function MosaicEditor() {
       subscriptionTimeoutRef.current = window.setTimeout(() => {
         if (!isConnected) return;
 
-        const visibleWidth = window.innerWidth / zoom;
-        const visibleHeight = window.innerHeight / zoom;
-        const newChunks = getVisibleChunks(offsetX, offsetY, visibleWidth, visibleHeight);
+        const newChunks = computeSubscriptionIntent(offsetX, offsetY, zoom);
 
         const { subscribe: toSub, unsubscribe: toUnsub } = diffChunkSubscriptions(
           subscribedChunksRef.current,
           newChunks
         );
 
-        if (toSub.length > 0) subscribe(toSub);
+        // Unsubscribe first: the server counts subscriptions against a per-
+        // connection cap, so subscribing before releasing the chunks we are
+        // leaving can push the new ones over the limit and get them dropped.
         if (toUnsub.length > 0) unsubscribe(toUnsub);
+        if (toSub.length > 0) subscribe(toSub);
 
         subscribedChunksRef.current = newChunks;
       }, 150);
     },
-    [isConnected, subscribe, unsubscribe]
+    [isConnected, subscribe, unsubscribe, computeSubscriptionIntent]
   );
+
+  // Re-subscribe on every new connection. The server throws away a connection's
+  // subscriptions when it closes, so after a reconnect our ref describes state
+  // that no longer exists and the next diff would send nothing at all — live
+  // updates would stop silently while the badge still read "Live".
+  useEffect(() => {
+    if (connectionEpoch === 0) return;
+
+    // Drop any in-flight diff first; it was computed against the dead socket.
+    if (subscriptionTimeoutRef.current) {
+      clearTimeout(subscriptionTimeoutRef.current);
+      subscriptionTimeoutRef.current = null;
+    }
+
+    const { x, y, zoom } = viewportRef.current;
+    const chunks = computeSubscriptionIntent(x, y, zoom);
+
+    // No unsubscribe: the server's set for this connection is already empty.
+    subscribedChunksRef.current = chunks;
+    if (chunks.length > 0) subscribe(chunks);
+  }, [connectionEpoch, subscribe, computeSubscriptionIntent]);
 
   useEffect(() => {
     return () => {
@@ -154,6 +208,12 @@ export function MosaicEditor() {
   const handleSaveTile = useCallback(
     async (tileX: number, tileY: number, pixelData: Uint8Array) => {
       await saveTile(tileX, tileY, pixelData);
+
+      // Paint it locally instead of waiting for the WebSocket echo to come
+      // back. That echo was the *only* thing that ever wrote a saved tile into
+      // the canvas cache, so any dropped or unsubscribed update made the user's
+      // own artwork visibly revert the moment the editor closed.
+      setTileUpdate({ x: tileX, y: tileY, pixelData });
     },
     []
   );
