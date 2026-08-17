@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from "react";
-import { MOSAIC_CONFIG, getRenderLevel } from "../config";
+import { MOSAIC_CONFIG, getRenderLevel, LEVEL_1_THRESHOLD } from "../config";
 import { useViewport } from "../hooks/useViewport";
 import { useOverviewImage } from "../hooks/useOverviewImage";
 import { loadChunkImage, getChunkVersion } from "../api/chunks";
@@ -40,7 +40,31 @@ const getDevicePixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_DEV
 const DOUBLE_TAP_ZOOM_FACTOR = 3;
 
 // Cache size limits to prevent memory leaks
-const MAX_TILE_CACHE_SIZE = 1000; // Max tiles to keep in memory (1000 x 3072 B = ~3 MB)
+//
+// Floor for the tile cache. The real capacity is computed from the viewport by
+// tileCacheCapacity() below — a fixed 1000 was smaller than the Level 2 working
+// set on any ordinary screen (a 1440x900 window needs ~2300 tiles the moment it
+// enters Level 2), so tiles evicted each other as fast as they loaded. Most of
+// the viewport then fell back to the upscaled chunk image with a shifting
+// patchwork of real tiles over it, which reads as tiles rendering wrongly —
+// while opening the editor, which fetches the tile directly, looked correct.
+const MIN_TILE_CACHE_SIZE = 1000;
+
+/**
+ * Tiles to keep for a given canvas, in CSS pixels.
+ *
+ * Sized at LEVEL_1_THRESHOLD px per tile — the lowest zoom that draws
+ * individual tiles, and therefore the most tiles the viewport can ever ask for
+ * — plus a quarter for panning headroom. This is a cap, not an allocation: a
+ * phone only ever stores the few hundred tiles it actually loads, so a generous
+ * bound costs small screens nothing. At 3072 B per tile, 1440x900 works out
+ * around 9 MB and a 4K display around 56 MB.
+ */
+function tileCacheCapacity(cssWidth: number, cssHeight: number): number {
+  const perRow = Math.ceil(cssWidth / LEVEL_1_THRESHOLD) + 1;
+  const perColumn = Math.ceil(cssHeight / LEVEL_1_THRESHOLD) + 1;
+  return Math.max(MIN_TILE_CACHE_SIZE, Math.ceil(perRow * perColumn * 1.25));
+}
 // Max chunks to keep in memory. Chunk images are 2048x2048 (CHUNK_PREVIEW_SIZE
 // in chunk_renderer.py), so a decoded RGBA bitmap is 2048*2048*4 = 16.8 MB and
 // 50 of them is a ~839 MB ceiling — not the ~150 MB this comment used to claim,
@@ -97,7 +121,9 @@ export function MosaicCanvas({
     height: window.innerHeight,
   });
   // Use LRU cache for tile data to prevent unbounded memory growth
-  const tileDataRef = useRef(new LRUCache<string, Uint8Array>(MAX_TILE_CACHE_SIZE));
+  const tileDataRef = useRef(
+    new LRUCache<string, Uint8Array>(tileCacheCapacity(window.innerWidth, window.innerHeight))
+  );
   const [tileDataVersion, setTileDataVersion] = useState(0); // Trigger re-renders on cache updates
   const [showGrid, setShowGrid] = useState(true); // Toggle with 'G' key
 
@@ -152,6 +178,13 @@ export function MosaicCanvas({
   const markViewAdjusted = useCallback(() => {
     hasUserAdjustedView.current = true;
   }, []);
+
+  // Keep the tile cache big enough for the current viewport. A window resized
+  // larger needs proportionally more tiles at Level 2, and a cache left at the
+  // old size would thrash instead of holding them.
+  useEffect(() => {
+    tileDataRef.current.setMaxSize(tileCacheCapacity(canvasSize.width, canvasSize.height));
+  }, [canvasSize.width, canvasSize.height]);
 
   // Handle external navigation requests (from MiniMap)
   useEffect(() => {

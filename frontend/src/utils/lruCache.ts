@@ -10,6 +10,22 @@ export class LRUCache<K, V> {
     this.maxSize = maxSize;
   }
 
+  /**
+   * Change the capacity, evicting immediately if the cache is now over it.
+   *
+   * Exists because the tile cache's right size depends on the viewport: a
+   * capacity below the number of tiles on screen makes the cache thrash rather
+   * than help, so it has to be recomputed when the canvas resizes.
+   */
+  setMaxSize(maxSize: number): void {
+    this.maxSize = maxSize;
+    while (this.cache.size > this.maxSize) {
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.cache.delete(oldestKey);
+    }
+  }
+
   get(key: K): V | undefined {
     const value = this.cache.get(key);
     if (value !== undefined) {
