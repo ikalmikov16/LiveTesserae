@@ -1,0 +1,7 @@
+# Formatting and lint tooling. Never installed into the production image —
+# it shipped in requirements.txt until Aug 2026, which put a code formatter on
+# a public web server for no reason.
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+black==26.5.1

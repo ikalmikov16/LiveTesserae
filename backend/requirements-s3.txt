@@ -1,0 +1,18 @@
+# Optional: only needed when STORAGE_MODE=s3.
+#
+# services/storage.py imports aioboto3 lazily inside _get_s3_session(), so a
+# local-storage deployment never touches these — which is the whole point of
+# keeping them out of requirements.txt. The current deployment is one box with
+# STORAGE_MODE=local, so this file is unused; it exists so S3 mode remains a
+# supported path rather than bit-rotting silently.
+#
+#   pip install -r requirements.txt -r requirements-s3.txt
+
+aioboto3==15.5.0
+boto3==1.40.61
+
+# --- transitive ---
+aiobotocore==2.25.1
+botocore==1.40.61
+jmespath==1.1.0
+s3transfer==0.14.0

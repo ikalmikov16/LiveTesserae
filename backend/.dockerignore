@@ -1,0 +1,31 @@
+# Keep the build context small and keep secrets out of the image.
+
+# Secrets — .env.deploy holds deploy credentials and must never be baked in.
+.env
+.env.*
+!.env.deploy.example
+
+# Local virtualenv (hundreds of MB, and built for the wrong platform)
+venv/
+.venv/
+
+# Tests and their caches: the image runs the app, not the suite
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Locally rendered chunk images — derived data, rebuilt by render_chunks.py
+storage/
+
+# Python bytecode
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# ECS-era deploy tooling, deleted in Phase 8 but irrelevant to the image either way
+task-def.json
+register-task-def.sh
+deploy.sh
+pause.sh
+resume.sh

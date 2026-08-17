@@ -1,16 +1,41 @@
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
-asyncpg>=0.29.0
-aiofiles>=23.2.0
-Pillow>=10.2.0
-python-multipart>=0.0.6
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-numpy>=1.26.0
+# Runtime dependencies for the production image.
+#
+# Pinned exactly, including transitives, so a rebuild resolves the same set the
+# suite was verified against. Resolved with `pip freeze` in a linux/amd64
+# python:3.12-slim container (the production base image) on Aug 16 2026 — NOT
+# on macOS/arm64, which resolves a different set.
+#
+# Everything here is imported by app/ or scripts/. Deliberately absent:
+#   - python-multipart: nothing uses UploadFile/File(/Form(
+#   - black:            formatting only, see requirements-dev.txt
+#   - aioboto3/boto3:   S3 mode only, see requirements-s3.txt. storage.py
+#                       imports aioboto3 lazily inside _get_s3_session, so
+#                       STORAGE_MODE=local never needs it installed.
 
-# AWS S3 support
-aioboto3>=13.0.0
-boto3>=1.34.0
+# --- direct ---
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+asyncpg==0.31.0
+aiofiles==25.1.0
+pillow==12.3.0
+pydantic==2.13.4
+pydantic-settings==2.15.0
+numpy==2.5.2
 
-# Development
-black>=24.0.0
+# --- transitive, pinned for reproducible builds ---
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+click==8.4.2
+h11==0.16.0
+httptools==0.8.0
+idna==3.18
+pydantic_core==2.46.4
+python-dotenv==1.2.3
+PyYAML==6.0.3
+starlette==1.6.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==17.0.1

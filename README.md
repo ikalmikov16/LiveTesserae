@@ -47,7 +47,7 @@ docker compose up -d
 cd backend
 python -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-dev.txt -r requirements-test.txt
 cp .env.example .env        # defaults work for local dev
 uvicorn app.main:app --reload
 ```
