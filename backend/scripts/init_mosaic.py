@@ -898,6 +898,7 @@ async def init_mosaic(
     workers: int = NUM_WORKERS,
     batch_size: int = DB_BATCH_SIZE,
     seed: int = 1,
+    region_tiles: int = 100,
 ) -> None:
     """Initialize the mosaic with the specified pattern."""
     import ssl as ssl_module
@@ -963,7 +964,9 @@ async def init_mosaic(
             # One composed plate, always rendered whole.
             if region or sparse < 1.0:
                 print("Note: --region and --sparse are ignored for 'world'.\n")
-            stored, seen = await _fill_from_world_plate(pool, batch_size)
+            stored, seen = await _fill_from_world_plate(
+                pool, batch_size, region_tiles=region_tiles
+            )
             elapsed = time.time() - start_time
             print(f"\n\nDone! Stored {stored:,} tiles in {elapsed:.1f}s")
             print(f"Speed: {seen / elapsed:,.0f} tiles/sec")
@@ -1090,6 +1093,16 @@ def main():
         help="Pattern to draw (default: gradient)",
     )
     parser.add_argument(
+        "--region-tiles",
+        type=int,
+        default=100,
+        help=(
+            "Square render region for 'world', in tiles (default: 100). "
+            "Peak memory scales with its square plus a full-width band; drop to "
+            "40-50 on a small box. 100 needs roughly 1 GB."
+        ),
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=1,
@@ -1148,6 +1161,7 @@ def main():
             workers=args.workers,
             batch_size=batch_size,
             seed=args.seed,
+            region_tiles=args.region_tiles,
         )
     )
 
