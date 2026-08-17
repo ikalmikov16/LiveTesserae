@@ -9,6 +9,10 @@ body,
 #root {
   width: 100%;
   height: 100%;
+  /* Kills Android's pull-to-refresh and iOS's rubber-band, both of which fire
+     when a pan on the mosaic reaches the edge of its range and the gesture
+     escapes to the document. */
+  overscroll-behavior: none;
 }
 
 canvas {

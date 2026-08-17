@@ -1,0 +1,19 @@
+/*
+ * The mosaic canvas owns every gesture that lands on it.
+ *
+ * `touch-action: none` stops the browser claiming pans and pinches as scroll
+ * and page zoom before the handlers ever see them. It does NOT stop iOS
+ * Safari's two-finger page pinch (the gesture* events do, see
+ * useCanvasGestures) and it does NOT stop the left-edge back-swipe, which
+ * remains a known limitation: a pan starting within ~20px of the left edge can
+ * navigate away mid-gesture.
+ */
+.mosaic-canvas {
+  display: block;
+  touch-action: none;
+  /* A drag across the canvas would otherwise start a text selection, and a
+     long press would raise the iOS selection callout over the mosaic. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}

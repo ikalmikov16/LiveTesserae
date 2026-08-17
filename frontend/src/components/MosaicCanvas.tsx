@@ -7,7 +7,9 @@ import { tileLoader, TILE_CANCELLED } from "../utils/tileLoader";
 import { rgbToImageData } from "../utils/pixels";
 import { LRUCache } from "../utils/lruCache";
 import { classifyWheel, type WheelLike } from "../utils/wheel";
+import { useCanvasGestures } from "../hooks/useCanvasGestures";
 import { ZoomControls } from "./ZoomControls";
+import "./MosaicCanvas.css";
 import type {
   TileCoordinates,
   TileWithPixels,
@@ -29,6 +31,13 @@ const GRID_THRESHOLD = 19; // ~60% zoom
 const MAX_DEVICE_PIXEL_RATIO = 2;
 
 const getDevicePixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
+
+// How far a double tap or double click zooms in.
+//
+// A phone's fit-to-screen is ~0.31 px/tile, so reaching the 24 px/tile editing
+// gate is a ~77x journey: seven doubles at 2x, five at 3x. Pinch is the primary
+// way to cover that ground; this is the coarse assist and should feel like it.
+const DOUBLE_TAP_ZOOM_FACTOR = 3;
 
 // Cache size limits to prevent memory leaks
 const MAX_TILE_CACHE_SIZE = 1000; // Max tiles to keep in memory (1000 x 3072 B = ~3 MB)
@@ -980,6 +989,54 @@ export function MosaicCanvas({
     [zoom, offsetX, offsetY]
   );
 
+  // What a tap or click means depends on how far in you are.
+  //
+  // Below Level 2 a tile is under 24 px and, at Level 0, under 3 px — smaller
+  // than a fingertip and smaller than a cursor hotspot. Opening a full-screen
+  // editor on whichever tile happened to be under the point is a hostile
+  // outcome, so the action is gated on zoom instead. The gate applies to the
+  // mouse as well as touch: the same 3 px target is just as unaimable with a
+  // cursor, and leaving click-to-edit on at Level 0 would keep exactly the
+  // behaviour this exists to remove.
+  const canEditAtThisZoom = renderLevel === 2;
+
+  const handleTap = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!canEditAtThisZoom) return;
+      const tile = screenToTile(clientX, clientY);
+      if (tile) onTileClick?.(tile);
+    },
+    [canEditAtThisZoom, screenToTile, onTileClick]
+  );
+
+  // Zoom toward the point, the way double-tap works on a map.
+  //
+  // Bound to the double rather than the single tap because a single tap that
+  // moves the view leaves no way to just look at the mosaic — and by the 10 px
+  // touch threshold a slightly nudged pan already counts as a tap. Pairing it
+  // with "single tap does nothing below Level 2" also means the double-tap
+  // window costs no latency: there is no single-tap action to delay, and at
+  // Level 2, where there is one, it fires immediately.
+  const handleDoubleTap = useCallback(
+    (clientX: number, clientY: number) => {
+      if (canEditAtThisZoom) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      markViewAdjusted();
+      zoomAt(clientX - rect.left, clientY - rect.top, DOUBLE_TAP_ZOOM_FACTOR);
+    },
+    [canEditAtThisZoom, zoomAt, markViewAdjusted]
+  );
+
+  useCanvasGestures(canvasRef, {
+    pan,
+    zoomAt,
+    onTap: handleTap,
+    onDoubleTap: handleDoubleTap,
+    onViewportGesture: markViewAdjusted,
+  });
+
   // Click handler - distinguish from drag
   const handleClick = (e: React.MouseEvent) => {
     // Only trigger click if mouse didn't move much (not a drag)
@@ -987,16 +1044,21 @@ export function MosaicCanvas({
     const dy = e.clientY - dragStartPos.current.y;
     if (Math.abs(dx) > 5 || Math.abs(dy) > 5) return;
 
-    const tile = screenToTile(e.clientX, e.clientY);
-    if (tile) onTileClick?.(tile);
+    handleTap(e.clientX, e.clientY);
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    handleDoubleTap(e.clientX, e.clientY);
   };
 
   return (
     <>
       <canvas
         ref={canvasRef}
+        className="mosaic-canvas"
         onMouseDown={handleMouseDown}
         onClick={handleClick}
+        onDoubleClick={handleDoubleClick}
         style={{ cursor: isDragging ? "grabbing" : "grab" }}
         role="application"
         aria-label="Mosaic editor canvas"
