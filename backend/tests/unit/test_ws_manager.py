@@ -1,6 +1,7 @@
 """Tests for WebSocket ConnectionManager."""
 
 import asyncio
+import logging
 
 import pytest
 from unittest.mock import AsyncMock
@@ -177,16 +178,24 @@ async def test_connect_global_limit_rejects(mgr, monkeypatch):
     assert ws3.close.call_args[1]["code"] == 1013
 
 
-async def test_connect_per_ip_limit_rejects(mgr, monkeypatch):
+async def test_connect_per_ip_limit_rejects(mgr, monkeypatch, caplog):
     monkeypatch.setattr("app.config.settings.ws_max_connections_per_ip", 2)
     ws1 = make_mock_ws()
     ws2 = make_mock_ws()
     ws3 = make_mock_ws()
     assert await mgr.connect(ws1) is True
     assert await mgr.connect(ws2) is True
-    result = await mgr.connect(ws3)
+    with caplog.at_level(logging.WARNING, logger="app.websocket.manager"):
+        result = await mgr.connect(ws3)
     assert result is False
     ws3.close.assert_called_once()
+    # The rejection must be audible. This path used to accept the socket, close
+    # it with 1013 and log nothing, so a client that never went live left no
+    # trace on the server — which is how it would present once carrier CGNAT
+    # started pushing many phone users through one address.
+    assert any(
+        "per-IP cap" in r.message for r in caplog.records
+    ), f"per-IP rejection logged nothing: {[r.message for r in caplog.records]}"
 
 
 async def test_connect_stores_client_ip(mgr):

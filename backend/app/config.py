@@ -48,12 +48,27 @@ class Settings(BaseSettings):
     chunks_path: str = "storage/chunks"
 
     # Rate limiting
+    #
+    # Per IP, which carrier CGNAT makes coarser than it looks: a large number of
+    # phone users can share one public address. Left at 10/s anyway, because a
+    # save costs a chunk render (~291 ms, serialised by render_semaphore) so
+    # sustained global capacity is only ~3.4 saves/sec — one IP at this limit
+    # already exceeds it, and raising the number would buy flooding room rather
+    # than headroom for real users, who save on the order of once per 30 s each.
+    # If CGNAT does start biting, the fix is a per-session limit (the client
+    # already sends X-Session-Id) with this left as the abuse backstop.
     rate_limit_tile_save: int = 10  # max saves per window per IP
     rate_limit_window_seconds: int = 1  # sliding window duration
 
     # WebSocket limits
     ws_max_connections: int = 1000  # global cap
-    ws_max_connections_per_ip: int = 10  # per-IP cap
+    # Per-IP cap, set to 10% of the global cap. This was 10, which is generous
+    # on desktop and wrong on mobile: carrier CGNAT puts large numbers of phone
+    # users behind a single public IP, so the eleventh phone user on a carrier
+    # silently never went live while their page loaded perfectly. Sized against
+    # the global cap rather than memory — the global cap is what bounds memory —
+    # so one abusive source can still take at most a tenth of capacity.
+    ws_max_connections_per_ip: int = 100
     ws_max_subscriptions: int = 50  # max chunks per connection
     ws_max_message_size: int = 4096  # max bytes for incoming WS messages
 

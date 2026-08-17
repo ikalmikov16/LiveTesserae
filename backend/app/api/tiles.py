@@ -58,6 +58,16 @@ def _check_rate_limit(request: Request) -> None:
 
     if len(timestamps) >= settings.rate_limit_tile_save:
         _rate_limit_store[client_ip] = timestamps
+        # Log it: this limit is per-IP, and carrier CGNAT shares one address
+        # across many phone users, so a burst of legitimate mobile traffic and
+        # a single abuser look identical from the client side — the user just
+        # sees "You're painting too fast!" after painting once. Without this
+        # line there is no way to tell which one is happening.
+        logger.warning(
+            f"Tile save rate-limited for {client_ip} "
+            f"({len(timestamps)}/{settings.rate_limit_tile_save} "
+            f"per {window}s)"
+        )
         raise HTTPException(429, "Rate limit exceeded. Try again shortly.")
 
     timestamps.append(now)

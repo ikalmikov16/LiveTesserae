@@ -41,6 +41,8 @@ def test_hardening_settings_defaults():
     assert settings.rate_limit_tile_save == 10
     assert settings.rate_limit_window_seconds == 1
     assert settings.ws_max_connections == 1000
-    assert settings.ws_max_connections_per_ip == 10
+    # 10% of the global cap. Raised from 10, which locked out all but the first
+    # ten phone users sharing a carrier's CGNAT address.
+    assert settings.ws_max_connections_per_ip == 100
     assert settings.ws_max_subscriptions == 50
     assert settings.ws_max_message_size == 4096

@@ -42,7 +42,15 @@ class ConnectionManager:
         # Must accept() first so close codes are delivered to the client
         await websocket.accept()
 
+        # Both rejection paths below must log. They used to accept the socket,
+        # close it with 1013 and say nothing, so a client that never went live
+        # was invisible here — the page loads perfectly and only the "Live"
+        # badge betrays it, which is not something a server operator can see.
         if len(self.active_connections) >= settings.ws_max_connections:
+            logger.warning(
+                f"WebSocket rejected: global cap reached "
+                f"({len(self.active_connections)}/{settings.ws_max_connections})"
+            )
             await websocket.close(code=1013, reason="Server at capacity")
             return False
 
@@ -53,6 +61,12 @@ class ConnectionManager:
             if getattr(ws, "_client_ip", None) == client_ip
         )
         if ip_count >= settings.ws_max_connections_per_ip:
+            logger.warning(
+                f"WebSocket rejected: per-IP cap reached for {client_ip} "
+                f"({ip_count}/{settings.ws_max_connections_per_ip}). "
+                f"Carrier CGNAT shares one IP across many phone users; if this "
+                f"recurs, raise ws_max_connections_per_ip."
+            )
             await websocket.close(code=1013, reason="Too many connections from this IP")
             return False
 
