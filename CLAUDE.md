@@ -36,16 +36,21 @@ There is no frontend test framework yet. If adding tests, use Vitest; start with
 
 ### Deploy (requires `.env.deploy`, never committed)
 ```bash
-cd backend && ./deploy.sh              # Docker buildx → ECR → force ECS redeploy
-cd backend && ./register-task-def.sh   # only when the task definition changes
-cd frontend && ./deploy.sh             # bun build → S3 sync → CloudFront invalidation
-backend/pause.sh | resume.sh           # scale ECS to 0 / stop-start RDS (cost saving)
+cd backend && ./deploy.sh    # ssh → git pull → docker build → docker compose up -d app
+cd frontend && ./deploy.sh   # bun build → rsync to the box (Caddy serves it)
 ```
-Both deploy scripts `set -a` before sourcing `.env.deploy` — plain `source` sets shell variables that never reach a subprocess, which is why the built bundle used to point at `http://localhost:8000`. `frontend/deploy.sh` refuses to build when `VITE_API_BASE_URL` is missing, localhost, or non-https (override the last with `ALLOW_INSECURE_API_URL=1`), and greps the built bundle afterwards to prove the value landed.
+`backend/deploy.sh` pulls `origin/main` **on the box**, so commit and push first. It waits for the container healthcheck and then curls `/health` from outside; a rollout that never goes healthy fails loudly with the last 40 log lines.
 
-`task-def.json` is a **template**, not a registerable document: `${...}` placeholders are filled by `register-task-def.sh`, and `DATABASE_URL` comes from Secrets Manager via `secrets`/`valueFrom`, never `environment`. `tests/unit/test_task_definition.py` fails the build if a describe-dump field, an inline credential, or a missing `TRUSTED_PROXY_HOPS` reappears. `backend/deploy.sh` passes `minimumHealthyPercent=0,maximumPercent=100` so a rollout never runs two tasks at once.
+Both scripts `set -a` before sourcing `.env.deploy` — plain `source` sets shell variables that never reach a subprocess, which is why the built bundle used to point at `http://localhost:8000`. `frontend/deploy.sh` refuses to build when `VITE_API_BASE_URL` is missing, localhost, or non-https (override the last with `ALLOW_INSECURE_API_URL=1`), and greps the built bundle afterwards to prove the value landed. Its `rsync --delete` means `DEPLOY_PATH` must be the Caddy webroot and nothing else.
 
-**AWS status (as of Aug 2026): the original AWS account (199264265773) is permanently closed** — every identifier in `backend/task-def.json` and both `.env.deploy.example` flows (ECR repo, RDS endpoint, S3 buckets, CloudFront distributions, IAM roles) is defunct. **The redeploy is planned as a different architecture — see `.cursor/plans/deployment.md`:** one Lightsail box running Postgres + the app + Caddy, with `STORAGE_MODE=local`. No ECS, no ALB, no RDS, no S3, no CloudFront. That makes `task-def.json`, `register-task-def.sh` and the ECR/ECS half of `deploy.sh` ECS-only baggage to delete once the box is live (Phase 8 of the plan). The old S3/CloudFront/RDS setup guides are in `.cursor/plans/archive/` and should not be followed.
+**Live since Aug 16 2026 on one Lightsail box** — `tesserae.live`, static IP `3.20.25.205`, AWS account `421680664444`, region `us-east-2`. One `docker compose` stack: Postgres + the app + Caddy, `STORAGE_MODE=local` on a Docker volume. Caddy terminates TLS (Let's Encrypt, automatic) and serves the built frontend from `/opt/tesserae/www`, proxying `/api/*`, `/health` and `/ws` to the app container. No ECS, ALB, RDS, S3 or CloudFront anywhere.
+
+- Box layout: `/opt/tesserae/{docker-compose.yml,Caddyfile,.env,www/,src/,backups/}`; the git checkout is `src/`.
+- `/opt/tesserae/.env` holds `DATABASE_URL` and `POSTGRES_PASSWORD`, chmod 600. **Generate that password on the box** (`openssl rand -hex 32`) so it never transits a laptop — and hex specifically, because `@ / : ? #` in a password break `DATABASE_URL` parsing.
+- Ops: `docker compose stop app` is the kill switch. Nightly `pg_dump -Fc` at 06:30 UTC via `/opt/tesserae/backup.sh` (7 days retained), half an hour before the 07:00 UTC Lightsail auto-snapshot so the dump lands inside it. Chunk images are derived data — never worth backing up, rebuild with `render_chunks.py`.
+- SSH is firewalled to a single home IP. If it changes, `aws lightsail put-instance-public-ports` with the new `/32` or SSH just hangs.
+
+The old AWS account (`199264265773`) is permanently closed and every identifier in it is defunct. The S3/CloudFront/RDS/ECS guides in `.cursor/plans/archive/` describe that dead architecture and should not be followed.
 
 ## Plans & project docs
 
@@ -82,7 +87,7 @@ Both deploy scripts `set -a` before sourcing `.env.deploy` — plain `source` se
 - **Tile pixel format is a contract**: exactly 3072 bytes = 32×32×3 RGB, row-major. Enforced in `api/tiles.py`, `utils/pixels.ts`, and the DB `BYTEA` column. Never change one side alone.
 - **Grid constants exist in three places and must match**: `backend/app/config.py`, `frontend/src/config.ts`, and `backend/scripts/render_chunks.py` (also `CHUNK_PREVIEW_SIZE`/`MOSAIC_PREVIEW_SIZE` duplicated between `chunk_renderer.py` and `render_chunks.py`). Prefer deduplicating over adding a fourth copy.
 - **ID formats differ by context**: DB/WS ids use colons (`tile_id "x:y"`, `chunk_id "cx:cy"`); storage/S3 file keys use underscores (`{cx}_{cy}.webp`). Easy to mix up.
-- **Single-instance assumption**: rate limiter, WS manager, stats cache, and `chunk_versions.json` version tracking are all in-process/file state. ECS desired-count must stay 1 unless these move to shared storage (Postgres already has an unused `chunks.version` column — the natural home).
+- **Single-instance assumption**: rate limiter, WS manager, stats cache, and `chunk_versions.json` version tracking are all in-process/file state. **Never scale the `app` compose service past one container** — a second copy cannot see the first one's WebSocket clients and the two would clobber each other's image writes. `backend/deploy.sh` replaces the container rather than running two, accepting a few seconds of downtime to keep that guarantee. Lifting this means moving the state to shared storage (Postgres already has an unused `chunks.version` column — the natural home).
 - **Schema changes**: no migration tool. `schema.sql` runs idempotently on startup (`CREATE ... IF NOT EXISTS`); manual `ALTER`s for existing deployments are documented as comments in that file.
 - **Route ordering**: in `api/chunks.py`, `/overview` routes must stay declared before `/{cx}/{cy}`.
 - **Tile URLs carry no version, so they must never be cached by age.** `/api/tiles/{x}/{y}` sends `no-cache, must-revalidate` plus an ETag built from `tiles.version`, and answers 304 to a matching `If-None-Match`; the client fetches with `cache: "no-cache"`. Both sides must keep agreeing — a `max-age` here becomes permanently stale pixels the moment a CDN fronts `/api`.
@@ -101,7 +106,9 @@ Both deploy scripts `set -a` before sourcing `.env.deploy` — plain `source` se
 
 ## Security & secrets
 
-- **Never commit real credentials.** `task-def.json` leaked the old RDS password into this public repo's git history. The working copy is now a placeholder template that pulls `DATABASE_URL` from Secrets Manager, and `tests/unit/test_task_definition.py` guards that — **but the password is still in the git history**. Purge it before or during the redeploy, and check whether that password was reused anywhere else. For the new account keep secrets in `.env` / `.env.deploy` (gitignored) or Secrets Manager.
+- **Never commit real credentials.** `task-def.json` once leaked an RDS password into this public repo's history. `git filter-repo` purged it across all 19 commits and the rewrite was force-pushed (Aug 16 2026), and that file is now deleted outright — but **treat the credential as permanently public**: GitHub may keep old objects reachable by SHA, and anyone who cloned before the rewrite still has it. The account it belonged to is closed, so it is moot there; the open question is whether it was reused anywhere else.
+- Secrets now live in `/opt/tesserae/.env` on the box (chmod 600, never committed, never copied off the host) and in gitignored `.env.deploy` files locally. **Nothing in this repo should ever contain a real password.**
+- `TRUSTED_PROXY_HOPS=1` is set in production because Caddy is the only proxy. Verify it by *attack*, not by reading logs: send several rapid tile saves carrying different spoofed `X-Forwarded-For` values and confirm the per-IP limiter still trips. The absent startup warning only proves the value isn't `0`.
 - The app is deliberately auth-less; abuse controls are per-IP rate limiting (`_check_rate_limit`) and WS connection caps in `config.py`. `get_client_ip` indexes `X-Forwarded-For` from the **right** using `settings.trusted_proxy_hops` — only entries appended by our own proxies are trustworthy. **`TRUSTED_PROXY_HOPS` must be set in production** (1 = ALB only, 2 = CloudFront→ALB); left at 0 behind a proxy, every request carries the load balancer's IP and the per-IP limits silently become site-wide. Note `hops=2` is only sound if the ALB cannot be reached directly — otherwise a client bypassing CloudFront controls the entry we read.
 
 ## Render concurrency rules (load-bearing — read before touching the render path)

@@ -22,7 +22,7 @@ fail() {
   exit 1
 }
 
-for var in S3_BUCKET CLOUDFRONT_DIST_ID VITE_API_BASE_URL; do
+for var in DEPLOY_HOST DEPLOY_PATH VITE_API_BASE_URL; do
   [ -n "${!var:-}" ] || fail "$var is not set in frontend/.env.deploy"
 done
 
@@ -65,10 +65,12 @@ if grep -rql "localhost:8000" dist/assets 2>/dev/null; then
   fail "built bundle still references localhost:8000 — the env vars did not reach vite."
 fi
 
-echo "Uploading to S3..."
-aws s3 sync dist/ "s3://${S3_BUCKET}" --delete
+# --delete removes anything on the server that is not in dist/. That is what
+# stops stale hashed assets accumulating forever, but it also means DEPLOY_PATH
+# must point at a directory Caddy serves and nothing else.
+echo "Uploading to ${DEPLOY_HOST}:${DEPLOY_PATH}..."
+rsync -avz --delete ${SSH_KEY:+-e "ssh -i $SSH_KEY"} dist/ "${DEPLOY_HOST}:${DEPLOY_PATH}/"
 
-echo "Invalidating CloudFront cache..."
-aws cloudfront create-invalidation --distribution-id "${CLOUDFRONT_DIST_ID}" --paths "/*"
-
-echo "Done! Frontend deployed."
+# No CDN invalidation step: Caddy serves these files directly, index.html is
+# sent no-cache and everything under /assets/ is content-hashed by vite.
+echo "Done! Frontend deployed to ${DEPLOY_HOST}."

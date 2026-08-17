@@ -1,53 +1,74 @@
 #!/bin/bash
+# Deploy the backend to the single Lightsail box.
+#
+# The box builds its own image from a git checkout -- there is no registry.
+# That is deliberate: one host, one image, and `docker compose up -d app` is
+# the whole rollout. See .cursor/plans/deployment.md.
+#
+# NOTE: this pulls from origin/main, so commit and push before running it.
 set -euo pipefail
 
-# Load deployment config from .env.deploy
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "$SCRIPT_DIR/.env.deploy" ]; then
+  # `set -a` exports everything the file defines. Plain `source` only sets shell
+  # variables, which never reach a subprocess.
   set -a
   # shellcheck disable=SC1091
   source "$SCRIPT_DIR/.env.deploy"
   set +a
 else
-  echo "Error: backend/.env.deploy not found."
-  echo "Copy backend/.env.deploy.example to backend/.env.deploy and fill in values."
+  echo "Error: backend/.env.deploy not found." >&2
+  echo "Copy backend/.env.deploy.example to backend/.env.deploy and fill in values." >&2
   exit 1
 fi
 
-echo "Logging into ECR..."
-aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+fail() { echo "Error: $1" >&2; exit 1; }
 
-ECR_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO"
+for var in DEPLOY_HOST REMOTE_DIR; do
+  [ -n "${!var:-}" ] || fail "$var is not set in backend/.env.deploy"
+done
 
-echo "Building and pushing Docker image for AMD64 (ECS Fargate)..."
-docker buildx build --platform linux/amd64 --no-cache --push -t $ECR_URI:latest .
+SSH=(ssh)
+[ -n "${SSH_KEY:-}" ] && SSH=(ssh -i "$SSH_KEY")
 
-echo "Updating ECS service..."
-# minimumHealthyPercent=0 / maximumPercent=100 stops the old and new tasks
-# overlapping. The default rolling config starts the new task before draining
-# the old one and then waits out the deregistration delay, leaving two instances
-# up for minutes — and this app keeps its WebSocket registry, render permit and
-# chunk version file in process memory. During that window edits reach roughly
-# half the viewers and the two tasks can clobber each other's image writes.
-# The trade is ~60 s of downtime for the single-instance guarantee the codebase
-# already assumes everywhere else.
-aws ecs update-service \
-  --cluster "$ECS_CLUSTER" \
-  --service "$ECS_SERVICE" \
-  --force-new-deployment \
-  --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100" \
-  --region "$AWS_REGION" \
-  --query 'service.deployments[0].[status,desiredCount]' \
-  --output text
+echo "Deploying to ${DEPLOY_HOST}..."
 
-# Same reason: more than one task breaks the in-process state assumptions.
-DESIRED=$(aws ecs describe-services \
-  --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" --region "$AWS_REGION" \
-  --query 'services[0].desiredCount' --output text 2>/dev/null || echo "")
-if [ -n "$DESIRED" ] && [ "$DESIRED" != "1" ]; then
-  echo "Warning: service desiredCount is $DESIRED, not 1." >&2
-  echo "  The rate limiter, WebSocket manager, render permit and chunk_versions.json" >&2
-  echo "  are all in-process state. Running more than one task corrupts them." >&2
-fi
+# Everything runs remotely in one session so a dropped connection cannot leave
+# the box half-updated. `docker compose up -d app` recreates only the app
+# container -- postgres and caddy keep running, and their volumes are untouched.
+#
+# There is a few seconds of downtime while the app container is replaced. That
+# is intentional: this app keeps its WebSocket registry, render permit and
+# chunk version state in process memory, so two app containers must never be
+# live at once.
+"${SSH[@]}" "$DEPLOY_HOST" REMOTE_DIR="$REMOTE_DIR" 'bash -s' <<'REMOTE'
+set -euo pipefail
+cd "$REMOTE_DIR"
 
-echo "Done! Deployment initiated. Check ECS console for status."
+echo "  pulling..."
+git -C src pull --ff-only
+
+echo "  building..."
+docker build -t tesserae-backend:latest src/backend
+
+echo "  restarting app..."
+docker compose up -d app
+
+echo "  waiting for health..."
+for i in $(seq 1 60); do
+  st=$(docker inspect --format '{{.State.Health.Status}}' tesserae-app-1 2>/dev/null || echo starting)
+  if [ "$st" = "healthy" ]; then
+    echo "  healthy after ${i}s"
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "  ERROR: app did not become healthy in 60s" >&2
+docker compose logs app --tail 40 >&2
+exit 1
+REMOTE
+
+echo "Verifying from outside..."
+curl -fsS "${HEALTH_URL:-https://tesserae.live/health}" && echo
+echo "Done! Backend deployed."
