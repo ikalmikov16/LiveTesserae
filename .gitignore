@@ -31,6 +31,10 @@ Thumbs.db
 storage/
 backend/storage/
 
+# Earth source data for the `earth` pattern: public domain and redistributable,
+# but ~21 MB that scripts/fetch_earth_data.py re-downloads on demand.
+backend/data/
+
 # Logs
 *.log
 logs/
