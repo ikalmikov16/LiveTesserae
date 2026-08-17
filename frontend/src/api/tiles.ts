@@ -17,6 +17,12 @@ export async function saveTile(
   const response = await fetch(`${API_BASE_URL}/api/tiles/${x}/${y}`, {
     method: "PUT",
     body: buffer,
+    // The editor flushes unsaved work on pagehide/visibilitychange, and a plain
+    // fetch started while the document is being torn down is cancelled — the
+    // flush would silently do nothing, which is worse than not having one.
+    // `navigator.sendBeacon` cannot stand in here: it only issues POST, and this
+    // is a PUT. The 3072-byte body is far inside the 64 KiB keepalive quota.
+    keepalive: true,
     headers: {
       "Content-Type": "application/octet-stream",
       "X-Session-Id": getSessionId(),

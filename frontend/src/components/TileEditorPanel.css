@@ -67,9 +67,16 @@
   transition: all var(--transition-fast);
 }
 
-.tile-editor-panel__header-btn:hover {
+.tile-editor-panel__header-btn:hover:not(:disabled) {
   background: rgba(74, 158, 255, 0.15);
   color: var(--color-accent);
+}
+
+/* Save is disabled until there is something to save, so it must not read as
+   an available action. */
+.tile-editor-panel__header-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .tile-editor-panel__close {

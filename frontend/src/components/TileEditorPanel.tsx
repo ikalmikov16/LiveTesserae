@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { flushSync, createPortal } from "react-dom";
-import { Check, Crosshair } from "lucide-react";
+import { Check, Crosshair, Save } from "lucide-react";
 import type { TileCoordinates } from "../types";
 import { PixelCanvas } from "./PixelCanvas";
 import { ColorPicker } from "./ColorPicker";
@@ -295,14 +295,86 @@ export function TileEditorPanel({
     }
   }, [isSaving, hasChanges, tile, saveToTile, onClose, onPreviewChange]);
 
+  // Save without closing. The editor used to commit only on close, which made
+  // "live" mean per-close and lost the drawing outright if the tab went away.
+  const handleSave = useCallback(async () => {
+    if (isSaving || !tile || !hasChanges) return;
+
+    setIsSaving(true);
+    setError(null);
+    const saved = await saveToTile(tile);
+    setIsSaving(false);
+
+    if (saved) {
+      // The preview deliberately stays on the canvas: unlike handleClose, the
+      // editor remains open and the user is still working on this tile.
+      flushSync(() => {
+        setShowSavedToast(true);
+      });
+      setTimeout(() => setShowSavedToast(false), 800);
+    }
+  }, [isSaving, tile, hasChanges, saveToTile]);
+
   // Track previous tile and its changes state to auto-save when switching tiles
   const prevTileRef = useRef<TileCoordinates | null>(null);
   const hadChangesRef = useRef(false);
+  const isSavingRef = useRef(false);
+  const flushingRef = useRef(false);
 
   // Update hadChangesRef whenever hasChanges changes
   useEffect(() => {
     hadChangesRef.current = hasChanges;
   }, [hasChanges]);
+
+  // Mirrored into a ref so the teardown handlers below can read it without
+  // re-registering on every save.
+  useEffect(() => {
+    isSavingRef.current = isSaving;
+  }, [isSaving]);
+
+  // Flush unsaved work when the page is torn down or backgrounded.
+  //
+  // Both events are needed and neither is redundant: `pagehide` is the reliable
+  // teardown signal on iOS (`beforeunload`/`unload` are not), while
+  // `visibilitychange` fires when the user merely switches apps — which is the
+  // moment an iOS tab becomes eligible for eviction, long before any teardown
+  // event would arrive. Whichever lands first wins; `flushingRef` stops the
+  // second from sending a duplicate.
+  //
+  // This depends on `keepalive` in `saveTile`. Without it the request is
+  // cancelled as the document goes away and this whole path is a no-op.
+  useEffect(() => {
+    if (!isOpen || !tile) return;
+
+    const flush = () => {
+      if (flushingRef.current || isSavingRef.current) return;
+      if (!hadChangesRef.current || !canvasHelpersRef.current) return;
+
+      flushingRef.current = true;
+      const rgbBytes = canvasHelpersRef.current.toRgbBytes();
+      void Promise.resolve(onSave(tile.x, tile.y, rgbBytes))
+        // If the tab survives (an app switch rather than a close), reflect that
+        // the work is committed so a later close does not send it again.
+        .then(() => setHasChanges(false))
+        .catch(() => {
+          // The document is usually going away; there is no one to tell.
+        })
+        .finally(() => {
+          flushingRef.current = false;
+        });
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [isOpen, tile, onSave]);
 
   // Auto-save when tile changes (clicking another tile while editor is open)
   useEffect(() => {
@@ -346,6 +418,14 @@ export function TileEditorPanel({
         return;
       }
 
+      // Cmd/Ctrl+S saves without closing. preventDefault or the browser opens
+      // its own "save page" dialog over the editor.
+      if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        handleSave();
+        return;
+      }
+
       // Tool shortcuts (1-4) and grid toggle (G)
       if (!e.metaKey && !e.ctrlKey && !e.altKey) {
         switch (e.key) {
@@ -385,7 +465,7 @@ export function TileEditorPanel({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, handleClose, handleUndo, handleRedo]);
+  }, [isOpen, handleClose, handleSave, handleUndo, handleRedo]);
 
   // Render toast via portal so it persists even when panel closes
   const toast = showSavedToast
@@ -418,6 +498,15 @@ export function TileEditorPanel({
                 <Crosshair size={18} />
               </button>
             )}
+            <button
+              className="tile-editor-panel__header-btn"
+              onClick={handleSave}
+              disabled={!hasChanges || isSaving}
+              aria-label="Save tile"
+              title="Save tile (⌘S)"
+            >
+              <Save size={18} />
+            </button>
             <button
               className="tile-editor-panel__close"
               onClick={handleClose}
