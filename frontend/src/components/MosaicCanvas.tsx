@@ -282,6 +282,25 @@ export function MosaicCanvas({
   // restart the loader's debounce continuously.
   const [tileInvalidation, setTileInvalidation] = useState(0);
 
+  // Coalesced retry for tiles whose fetch failed outright. One timer for the
+  // whole burst: a server hiccup fails many tiles at once and they all want the
+  // same single re-run, not one apiece.
+  const failedTileRetryRef = useRef<number | null>(null);
+  const scheduleFailedTileRetry = useCallback(() => {
+    if (failedTileRetryRef.current !== null) return;
+    failedTileRetryRef.current = window.setTimeout(() => {
+      failedTileRetryRef.current = null;
+      setTileInvalidation((n) => n + 1);
+    }, 2000);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (failedTileRetryRef.current !== null) clearTimeout(failedTileRetryRef.current);
+    },
+    []
+  );
+
   // Animation state for selection indicator pulse
   const [selectionPulse, setSelectionPulse] = useState(0);
   const selectionAnimationRef = useRef<number | null>(null);
@@ -745,9 +764,16 @@ export function MosaicCanvas({
 
       sortedTiles.forEach(({ x, y }) => {
         const key = getTileKey(x, y);
-        // Skip if already loading, or already loaded and still believed current
+        // Skip if already loading, or already loaded and still believed current.
+        //
+        // get() rather than has(): get() is the only method that refreshes LRU
+        // recency, and nothing else calls it on this cache, so eviction order
+        // was really insertion order. Combined with the centre-first sort just
+        // above, that made the cache evict the middle of the screen first —
+        // exactly backwards. Touching each visible tile here keys recency to
+        // visibility, which is what the eviction policy should follow.
         if (loading.has(key)) return;
-        if (!stale.has(key) && (tileCache.has(key) || nonExistent.has(key))) return;
+        if (!stale.has(key) && (tileCache.get(key) !== undefined || nonExistent.has(key))) return;
 
         loading.add(key);
         stale.delete(key);
@@ -780,9 +806,15 @@ export function MosaicCanvas({
             setTileDataVersion((n) => n + 1); // Trigger re-render
           })
           .catch(() => {
-            // Request failed, just remove from loading (will retry)
             loading.delete(key);
             if (tileCache.has(key)) stale.add(key);
+            // ...and actually retry, which the comment here used to claim
+            // without doing. A tile that has never loaded ends up in no set at
+            // all — not cached, not loading, not stale, not non-existent — and
+            // this effect only re-runs when the viewport changes, so a single
+            // transient failure left a permanent hole until the user panned.
+            // Nudging tileInvalidation re-runs the pass, which re-enqueues it.
+            scheduleFailedTileRetry();
           });
       });
     }, 50); // 50ms debounce
@@ -793,6 +825,7 @@ export function MosaicCanvas({
     getVisibleTiles,
     // tileDataVersion not needed - we check the ref directly
     tileInvalidation, // but a chunk update marks tiles stale, which must refetch
+    scheduleFailedTileRetry, // stable; bumps tileInvalidation after a failure
     offsetX,
     offsetY,
     zoom,
