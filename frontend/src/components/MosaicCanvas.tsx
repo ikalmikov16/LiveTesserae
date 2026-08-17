@@ -23,6 +23,13 @@ const CHUNKS_PER_ROW = GRID_WIDTH / CHUNK_SIZE; // 10
 // Grid shows at Level 2 when tiles are at least this size
 const GRID_THRESHOLD = 19; // ~60% zoom
 
+// Cap the backing store at 2x device pixels. A 390x844 phone at DPR 3
+// composites ~2.96M pixels per frame; DPR 2 is (2/3)^2 = 44% of that for
+// nearly all of the sharpness. Tune this after measuring on real hardware.
+const MAX_DEVICE_PIXEL_RATIO = 2;
+
+const getDevicePixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
+
 // Cache size limits to prevent memory leaks
 const MAX_TILE_CACHE_SIZE = 1000; // Max tiles to keep in memory (1000 x 3072 B = ~3 MB)
 // Max chunks to keep in memory. Chunk images are 2048x2048 (CHUNK_PREVIEW_SIZE
@@ -170,8 +177,12 @@ export function MosaicCanvas({
   const getVisibleChunks = useCallback((): { cx: number; cy: number }[] => {
     if (!canvasRef.current) return [];
 
-    const canvasWidth = canvasRef.current.width;
-    const canvasHeight = canvasRef.current.height;
+    // CSS pixels, deliberately: `zoom` is CSS-px-per-world-unit, so dividing a
+    // device-pixel width by it would claim a viewport dpr times too wide and
+    // request that many extra chunks. canvas.width is the backing store and is
+    // the wrong number here.
+    const canvasWidth = canvasSize.width;
+    const canvasHeight = canvasSize.height;
 
     // Calculate visible range
     const startCx = Math.max(0, Math.floor(offsetX / (CHUNK_SIZE * TILE_SIZE)));
@@ -192,14 +203,16 @@ export function MosaicCanvas({
       }
     }
     return chunks;
-  }, [offsetX, offsetY, zoom]);
+  }, [offsetX, offsetY, zoom, canvasSize.width, canvasSize.height]);
 
   // Calculate visible tiles for Level 2
   const getVisibleTiles = useCallback((): { x: number; y: number }[] => {
     if (!canvasRef.current) return [];
 
-    const canvasWidth = canvasRef.current.width;
-    const canvasHeight = canvasRef.current.height;
+    // CSS pixels — see the note in getVisibleChunks. At DPR 2 the backing-store
+    // width would ask for four times the tiles, one request per tile.
+    const canvasWidth = canvasSize.width;
+    const canvasHeight = canvasSize.height;
 
     // Calculate visible range
     const startX = Math.max(0, Math.floor(offsetX / TILE_SIZE));
@@ -214,7 +227,7 @@ export function MosaicCanvas({
       }
     }
     return tiles;
-  }, [offsetX, offsetY, zoom]);
+  }, [offsetX, offsetY, zoom, canvasSize.width, canvasSize.height]);
 
   // Track tiles being loaded and tiles that don't exist (404)
   const loadingTilesRef = useRef<Set<string>>(new Set());
@@ -239,18 +252,39 @@ export function MosaicCanvas({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // Everything below is computed in DEVICE pixels rather than CSS pixels, so
+    // `s` is the scale used for drawing and `zoom` is only for CSS-space
+    // reasoning (hit tests, render level, which chunks to fetch).
+    //
+    // The alternative — ctx.scale(dpr, dpr) and CSS-pixel math — loses on this
+    // canvas specifically: every coordinate here is already Math.round()ed to
+    // land on whole pixels and avoid seams, and under a scale transform those
+    // rounds are whole *CSS* pixels, i.e. fractional device pixels at any
+    // non-integer ratio. Rounding in device space keeps the guarantee the
+    // rounding was added for. It also sidesteps ctx.scale accumulating across
+    // calls and being silently reset whenever canvas.width is assigned.
+    const dpr = getDevicePixelRatio();
     const width = canvas.width;
     const height = canvas.height;
+    const s = zoom * dpr;
 
     // Clear with dark background (visible around mosaic at low zoom)
     ctx.fillStyle = "#1a1a1a";
     ctx.fillRect(0, 0, width, height);
 
     // Calculate mosaic position on screen
-    const mosaicScreenX = (0 - offsetX) * zoom;
-    const mosaicScreenY = (0 - offsetY) * zoom;
-    const mosaicScreenW = MOSAIC_WIDTH * zoom;
-    const mosaicScreenH = MOSAIC_HEIGHT * zoom;
+    const mosaicScreenX = (0 - offsetX) * s;
+    const mosaicScreenY = (0 - offsetY) * s;
+    const mosaicScreenW = MOSAIC_WIDTH * s;
+    const mosaicScreenH = MOSAIC_HEIGHT * s;
+
+    // Levels 0 and 1 draw a 2048px image scaled DOWN (a chunk spans at most
+    // ~2400 CSS px on screen), where smoothing is what makes it look right.
+    // Only Level 2 upscales real pixel art, and renderTileData turns smoothing
+    // off for itself. This has to be set per draw: the flag used to be set
+    // exclusively inside renderTileData and simply leaked onto whatever was
+    // drawn next, and assigning canvas.width resets it to true anyway.
+    ctx.imageSmoothingEnabled = true;
 
     if (renderLevel === 0 && mosaicOverview) {
       // Level 0: Draw single overview image
@@ -293,10 +327,10 @@ export function MosaicCanvas({
 
         if (cached) {
           // Calculate exact pixel boundaries using rounding to avoid seams
-          const x1 = Math.round((cx * chunkWorldSize - offsetX) * zoom);
-          const y1 = Math.round((cy * chunkWorldSize - offsetY) * zoom);
-          const x2 = Math.round(((cx + 1) * chunkWorldSize - offsetX) * zoom);
-          const y2 = Math.round(((cy + 1) * chunkWorldSize - offsetY) * zoom);
+          const x1 = Math.round((cx * chunkWorldSize - offsetX) * s);
+          const y1 = Math.round((cy * chunkWorldSize - offsetY) * s);
+          const x2 = Math.round(((cx + 1) * chunkWorldSize - offsetX) * s);
+          const y2 = Math.round(((cy + 1) * chunkWorldSize - offsetY) * s);
           ctx.drawImage(cached.image, x1, y1, x2 - x1, y2 - y1);
         }
         // If not cached, overview is showing as fallback - no need for placeholder
@@ -331,10 +365,10 @@ export function MosaicCanvas({
       getVisibleChunks().forEach(({ cx, cy }) => {
         const cached = cache.get(`${cx}_${cy}`);
         if (cached) {
-          const x1 = Math.round((cx * chunkWorldSize - offsetX) * zoom);
-          const y1 = Math.round((cy * chunkWorldSize - offsetY) * zoom);
-          const x2 = Math.round(((cx + 1) * chunkWorldSize - offsetX) * zoom);
-          const y2 = Math.round(((cy + 1) * chunkWorldSize - offsetY) * zoom);
+          const x1 = Math.round((cx * chunkWorldSize - offsetX) * s);
+          const y1 = Math.round((cy * chunkWorldSize - offsetY) * s);
+          const x2 = Math.round(((cx + 1) * chunkWorldSize - offsetX) * s);
+          const y2 = Math.round(((cy + 1) * chunkWorldSize - offsetY) * s);
           ctx.drawImage(cached.image, x1, y1, x2 - x1, y2 - y1);
         }
       });
@@ -344,10 +378,10 @@ export function MosaicCanvas({
         const [tileX, tileY] = key.split(":").map(Number);
 
         // Calculate exact pixel boundaries using rounding to avoid seams
-        const x1 = Math.round((tileX * TILE_SIZE - offsetX) * zoom);
-        const y1 = Math.round((tileY * TILE_SIZE - offsetY) * zoom);
-        const x2 = Math.round(((tileX + 1) * TILE_SIZE - offsetX) * zoom);
-        const y2 = Math.round(((tileY + 1) * TILE_SIZE - offsetY) * zoom);
+        const x1 = Math.round((tileX * TILE_SIZE - offsetX) * s);
+        const y1 = Math.round((tileY * TILE_SIZE - offsetY) * s);
+        const x2 = Math.round(((tileX + 1) * TILE_SIZE - offsetX) * s);
+        const y2 = Math.round(((tileY + 1) * TILE_SIZE - offsetY) * s);
         const tileW = x2 - x1;
 
         // Only draw if tile is visible in viewport
@@ -358,10 +392,10 @@ export function MosaicCanvas({
 
       // Draw tile preview overlay (live editing preview before save)
       if (tilePreview) {
-        const x1 = Math.round((tilePreview.x * TILE_SIZE - offsetX) * zoom);
-        const y1 = Math.round((tilePreview.y * TILE_SIZE - offsetY) * zoom);
-        const x2 = Math.round(((tilePreview.x + 1) * TILE_SIZE - offsetX) * zoom);
-        const y2 = Math.round(((tilePreview.y + 1) * TILE_SIZE - offsetY) * zoom);
+        const x1 = Math.round((tilePreview.x * TILE_SIZE - offsetX) * s);
+        const y1 = Math.round((tilePreview.y * TILE_SIZE - offsetY) * s);
+        const x2 = Math.round(((tilePreview.x + 1) * TILE_SIZE - offsetX) * s);
+        const y2 = Math.round(((tilePreview.y + 1) * TILE_SIZE - offsetY) * s);
         const tileW = x2 - x1;
 
         // Only draw if preview tile is visible
@@ -376,29 +410,34 @@ export function MosaicCanvas({
         ctx.save();
         ctx.globalCompositeOperation = "difference";
         ctx.strokeStyle = "#ffffff"; // White + difference = inverts underlying colors
-        ctx.lineWidth = 1;
+        // One CSS pixel wide. A literal 1 would now mean one *device* pixel,
+        // i.e. a half-width hairline on a retina screen.
+        const gridLineWidth = dpr;
+        ctx.lineWidth = gridLineWidth;
 
         // Calculate visible tile range
         const startTileX = Math.max(0, Math.floor(offsetX / TILE_SIZE));
         const startTileY = Math.max(0, Math.floor(offsetY / TILE_SIZE));
-        const endTileX = Math.min(GRID_WIDTH, Math.ceil((offsetX + width / zoom) / TILE_SIZE));
-        const endTileY = Math.min(GRID_HEIGHT, Math.ceil((offsetY + height / zoom) / TILE_SIZE));
+        const endTileX = Math.min(GRID_WIDTH, Math.ceil((offsetX + width / s) / TILE_SIZE));
+        const endTileY = Math.min(GRID_HEIGHT, Math.ceil((offsetY + height / s) / TILE_SIZE));
 
         // Draw vertical lines
         ctx.beginPath();
         for (let i = startTileX; i <= endTileX; i++) {
-          const screenX = (i * TILE_SIZE - offsetX) * zoom;
-          ctx.moveTo(screenX + 0.5, Math.max(0, mosaicScreenY));
-          ctx.lineTo(screenX + 0.5, Math.min(height, mosaicScreenY + mosaicScreenH));
+          // Snap to a whole device pixel, then offset by half the stroke so the
+          // line covers whole pixels instead of straddling two at half opacity.
+          const screenX = Math.round((i * TILE_SIZE - offsetX) * s) + gridLineWidth / 2;
+          ctx.moveTo(screenX, Math.max(0, mosaicScreenY));
+          ctx.lineTo(screenX, Math.min(height, mosaicScreenY + mosaicScreenH));
         }
         ctx.stroke();
 
         // Draw horizontal lines
         ctx.beginPath();
         for (let i = startTileY; i <= endTileY; i++) {
-          const screenY = (i * TILE_SIZE - offsetY) * zoom;
-          ctx.moveTo(Math.max(0, mosaicScreenX), screenY + 0.5);
-          ctx.lineTo(Math.min(width, mosaicScreenX + mosaicScreenW), screenY + 0.5);
+          const screenY = Math.round((i * TILE_SIZE - offsetY) * s) + gridLineWidth / 2;
+          ctx.moveTo(Math.max(0, mosaicScreenX), screenY);
+          ctx.lineTo(Math.min(width, mosaicScreenX + mosaicScreenW), screenY);
         }
         ctx.stroke();
         ctx.restore();
@@ -409,10 +448,10 @@ export function MosaicCanvas({
     const tileToHighlight =
       selectedTile || (tilePreview ? { x: tilePreview.x, y: tilePreview.y } : null);
     if (tileToHighlight) {
-      const x1 = Math.round((tileToHighlight.x * TILE_SIZE - offsetX) * zoom);
-      const y1 = Math.round((tileToHighlight.y * TILE_SIZE - offsetY) * zoom);
-      const x2 = Math.round(((tileToHighlight.x + 1) * TILE_SIZE - offsetX) * zoom);
-      const y2 = Math.round(((tileToHighlight.y + 1) * TILE_SIZE - offsetY) * zoom);
+      const x1 = Math.round((tileToHighlight.x * TILE_SIZE - offsetX) * s);
+      const y1 = Math.round((tileToHighlight.y * TILE_SIZE - offsetY) * s);
+      const x2 = Math.round(((tileToHighlight.x + 1) * TILE_SIZE - offsetX) * s);
+      const y2 = Math.round(((tileToHighlight.y + 1) * TILE_SIZE - offsetY) * s);
       const tileW = x2 - x1;
       const tileH = y2 - y1;
 
@@ -421,7 +460,7 @@ export function MosaicCanvas({
         // Pulsing black border (opacity varies from 0.2 to 1.0)
         const opacity = 0.2 + selectionPulse * 0.8;
         ctx.strokeStyle = `rgba(0, 0, 0, ${opacity})`;
-        ctx.lineWidth = 3;
+        ctx.lineWidth = 3 * dpr; // 3 CSS pixels
         ctx.strokeRect(x1, y1, tileW, tileH);
       }
     }
@@ -725,9 +764,23 @@ export function MosaicCanvas({
       const canvas = canvasRef.current;
       if (!canvas) return;
 
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-      setCanvasSize({ width: window.innerWidth, height: window.innerHeight });
+      const cssWidth = window.innerWidth;
+      const cssHeight = window.innerHeight;
+      const dpr = getDevicePixelRatio();
+
+      // Backing store in device pixels...
+      canvas.width = Math.round(cssWidth * dpr);
+      canvas.height = Math.round(cssHeight * dpr);
+      // ...and an explicit CSS size, which the element does not otherwise have:
+      // App.css only sets `canvas { display: block }`, so layout size comes from
+      // these attributes. Without the two lines below a DPR-2 device would lay
+      // the canvas out at twice the viewport width.
+      canvas.style.width = `${cssWidth}px`;
+      canvas.style.height = `${cssHeight}px`;
+
+      // Kept in CSS pixels: this feeds useViewport, whose zoom, clamping and
+      // fit-to-screen are all CSS-space, and the two visible-range helpers.
+      setCanvasSize({ width: cssWidth, height: cssHeight });
       setIsCanvasReady(true);
     };
 
@@ -735,7 +788,27 @@ export function MosaicCanvas({
     handleResize();
 
     window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+
+    // devicePixelRatio changes when the window moves to a display of a
+    // different density, and when the browser is zoomed. Neither reliably
+    // fires `resize`, and the query has to be re-armed after every change
+    // because it is pinned to the ratio that was current when it was created.
+    let dprQuery: MediaQueryList | null = null;
+    const handleDprChange = () => {
+      handleResize();
+      armDprQuery();
+    };
+    function armDprQuery() {
+      dprQuery?.removeEventListener("change", handleDprChange);
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      dprQuery.addEventListener("change", handleDprChange);
+    }
+    armDprQuery();
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      dprQuery?.removeEventListener("change", handleDprChange);
+    };
   }, []);
 
   // Keep the mosaic fitted to the canvas until the user takes control.
@@ -876,6 +949,37 @@ export function MosaicCanvas({
     dragStartPos.current = { x: e.clientX, y: e.clientY };
   };
 
+  // The one screen -> tile mapping. Kept in one place because the touch
+  // handlers need exactly this and would otherwise copy it.
+  //
+  // Entirely CSS-space: getBoundingClientRect and pointer coordinates are both
+  // CSS pixels, and `zoom` is CSS-px-per-world-unit, so the device pixel ratio
+  // must NOT appear here. It belongs only to the draw path.
+  //
+  // Returns null when the point is outside the mosaic.
+  const screenToTile = useCallback(
+    (clientX: number, clientY: number): TileCoordinates | null => {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+
+      const rect = canvas.getBoundingClientRect();
+      const worldX = (clientX - rect.left) / zoom + offsetX;
+      const worldY = (clientY - rect.top) / zoom + offsetY;
+
+      if (worldX < 0 || worldX >= MOSAIC_WIDTH || worldY < 0 || worldY >= MOSAIC_HEIGHT) {
+        return null;
+      }
+
+      const tileX = Math.floor(worldX / TILE_SIZE);
+      const tileY = Math.floor(worldY / TILE_SIZE);
+      if (tileX < 0 || tileX >= GRID_WIDTH || tileY < 0 || tileY >= GRID_HEIGHT) {
+        return null;
+      }
+      return { x: tileX, y: tileY };
+    },
+    [zoom, offsetX, offsetY]
+  );
+
   // Click handler - distinguish from drag
   const handleClick = (e: React.MouseEvent) => {
     // Only trigger click if mouse didn't move much (not a drag)
@@ -883,29 +987,8 @@ export function MosaicCanvas({
     const dy = e.clientY - dragStartPos.current.y;
     if (Math.abs(dx) > 5 || Math.abs(dy) > 5) return;
 
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = e.clientX - rect.left;
-    const canvasY = e.clientY - rect.top;
-
-    // Convert screen to world coordinates
-    const worldX = canvasX / zoom + offsetX;
-    const worldY = canvasY / zoom + offsetY;
-
-    // Check if click is within mosaic bounds
-    if (worldX < 0 || worldX >= MOSAIC_WIDTH || worldY < 0 || worldY >= MOSAIC_HEIGHT) {
-      return; // Clicked outside mosaic
-    }
-
-    const tileX = Math.floor(worldX / TILE_SIZE);
-    const tileY = Math.floor(worldY / TILE_SIZE);
-
-    // Ensure tile coordinates are valid
-    if (tileX >= 0 && tileX < GRID_WIDTH && tileY >= 0 && tileY < GRID_HEIGHT) {
-      onTileClick?.({ x: tileX, y: tileY });
-    }
+    const tile = screenToTile(e.clientX, e.clientY);
+    if (tile) onTileClick?.(tile);
   };
 
   return (
