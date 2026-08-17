@@ -5,9 +5,30 @@
 export class LRUCache<K, V> {
   private cache = new Map<K, V>();
   private maxSize: number;
+  private onEvict?: (value: V, key: K) => void;
 
-  constructor(maxSize: number) {
+  /**
+   * @param onEvict Called for every value the cache drops, from any path.
+   *   Needed for values that own memory the GC will not reclaim on its own —
+   *   an ImageBitmap stays resident until close(). There are five ways a value
+   *   leaves this cache and all of them fire this: capacity overflow on set,
+   *   replacing an existing key, shrinking via setMaxSize, delete, and clear.
+   *   The replace-on-set path is the easiest to overlook and the most often
+   *   hit, since every tile update overwrites a key that is already present.
+   */
+  constructor(maxSize: number, onEvict?: (value: V, key: K) => void) {
     this.maxSize = maxSize;
+    this.onEvict = onEvict;
+  }
+
+  private evict(key: K): void {
+    if (!this.onEvict) {
+      this.cache.delete(key);
+      return;
+    }
+    const value = this.cache.get(key);
+    this.cache.delete(key);
+    if (value !== undefined) this.onEvict(value, key);
   }
 
   /**
@@ -22,7 +43,7 @@ export class LRUCache<K, V> {
     while (this.cache.size > this.maxSize) {
       const oldestKey = this.cache.keys().next().value;
       if (oldestKey === undefined) break;
-      this.cache.delete(oldestKey);
+      this.evict(oldestKey);
     }
   }
 
@@ -37,9 +58,14 @@ export class LRUCache<K, V> {
   }
 
   set(key: K, value: V): void {
-    // If key exists, delete it first (to update position)
+    // If key exists, replace it — releasing the old value, which is not
+    // necessarily the same object as the new one.
     if (this.cache.has(key)) {
-      this.cache.delete(key);
+      if (this.cache.get(key) !== value) {
+        this.evict(key);
+      } else {
+        this.cache.delete(key);
+      }
     }
 
     // Add the new item
@@ -49,9 +75,8 @@ export class LRUCache<K, V> {
     while (this.cache.size > this.maxSize) {
       // Map preserves insertion order, so first key is oldest
       const oldestKey = this.cache.keys().next().value;
-      if (oldestKey !== undefined) {
-        this.cache.delete(oldestKey);
-      }
+      if (oldestKey === undefined) break;
+      this.evict(oldestKey);
     }
   }
 
@@ -60,10 +85,15 @@ export class LRUCache<K, V> {
   }
 
   delete(key: K): boolean {
-    return this.cache.delete(key);
+    if (!this.cache.has(key)) return false;
+    this.evict(key);
+    return true;
   }
 
   clear(): void {
+    if (this.onEvict) {
+      for (const key of [...this.cache.keys()]) this.evict(key);
+    }
     this.cache.clear();
   }
 

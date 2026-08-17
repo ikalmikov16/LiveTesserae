@@ -80,6 +80,18 @@ interface ChunkCache {
   version: number;
 }
 
+/**
+ * A cached Level 2 tile.
+ *
+ * `bitmap` is null between the tile arriving and its decode resolving. The
+ * entry is inserted immediately anyway so the loader counts the tile as held
+ * and does not re-request it every pass; the chunk image underneath covers the
+ * square for those few milliseconds.
+ */
+interface TileEntry {
+  bitmap: ImageBitmap | null;
+}
+
 interface TilePreview {
   x: number;
   y: number;
@@ -120,43 +132,68 @@ export function MosaicCanvas({
     width: window.innerWidth,
     height: window.innerHeight,
   });
-  // Use LRU cache for tile data to prevent unbounded memory growth
+  // Use LRU cache for tile data to prevent unbounded memory growth.
+  //
+  // Holds a decoded, IMMUTABLE ImageBitmap per tile rather than raw bytes.
+  // Immutability is the point: nothing can mutate a bitmap between queuing a
+  // draw and the GPU executing it, so the drawn pixels are the tile's own on
+  // every engine. It is also far cheaper — decoding happens once when the tile
+  // arrives instead of once per tile per frame.
+  //
+  // The entry is an object so the bitmap can be attached in place after the
+  // async decode without re-inserting the key and disturbing LRU order, and so
+  // a decode that finishes after its entry was evicted or replaced can detect
+  // that by identity and close its bitmap instead of resurrecting it.
   const tileDataRef = useRef(
-    new LRUCache<string, Uint8Array>(tileCacheCapacity(window.innerWidth, window.innerHeight))
+    new LRUCache<string, TileEntry>(
+      tileCacheCapacity(window.innerWidth, window.innerHeight),
+      // An ImageBitmap stays resident until closed; the GC will not do it.
+      (entry) => entry.bitmap?.close()
+    )
   );
   const [tileDataVersion, setTileDataVersion] = useState(0); // Trigger re-renders on cache updates
   const [showGrid, setShowGrid] = useState(true); // Toggle with 'G' key
 
-  // Offscreen canvas for rendering RGB data
-  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Scratch canvas for the LIVE EDIT PREVIEW only — never for cached tiles.
+  //
+  // Cached tiles used to go through a single shared 32x32 canvas: putImageData
+  // then drawImage, once per tile, ~600 times per frame. That is only correct
+  // if drawImage snapshots its source. Chrome/Skia does. WebKit hands drawImage
+  // a live reference to the source surface, so on iOS the queued draws could
+  // resolve against whatever that one surface held later — which is why Level 2
+  // showed the wrong tile's pixels in cell after cell, changing on every
+  // repaint, while Levels 0 and 1 (real images, never mutated) were fine.
+  //
+  // The preview keeps a scratch canvas because its bytes change on every
+  // brush stroke, so caching a bitmap per stroke would be worse. It is safe
+  // here for the same two reasons the tile editor is correct on the same
+  // device: it is drawn exactly ONCE per frame, so there is no second draw to
+  // alias against, and willReadFrequently forces an unaccelerated CPU buffer,
+  // off the GPU path entirely.
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const getOffscreenCanvas = useCallback((): HTMLCanvasElement => {
-    if (!offscreenCanvasRef.current) {
-      offscreenCanvasRef.current = document.createElement("canvas");
-      offscreenCanvasRef.current.width = TILE_SIZE;
-      offscreenCanvasRef.current.height = TILE_SIZE;
-    }
-    return offscreenCanvasRef.current;
-  }, []);
-
-  // Render RGB tile data to canvas
-  const renderTileData = useCallback(
+  const renderPreviewTile = useCallback(
     (
       ctx: CanvasRenderingContext2D,
       screenX: number,
       screenY: number,
       rgb: Uint8Array,
-      screenTileSize: number
+      width: number,
+      height: number
     ) => {
-      const offscreen = getOffscreenCanvas();
-      const offCtx = offscreen.getContext("2d")!;
-      const imageData = rgbToImageData(rgb);
-      offCtx.putImageData(imageData, 0, 0);
+      if (!previewCanvasRef.current) {
+        previewCanvasRef.current = document.createElement("canvas");
+        previewCanvasRef.current.width = TILE_SIZE;
+        previewCanvasRef.current.height = TILE_SIZE;
+      }
+      const scratch = previewCanvasRef.current;
+      const scratchCtx = scratch.getContext("2d", { willReadFrequently: true })!;
+      scratchCtx.putImageData(rgbToImageData(rgb), 0, 0);
 
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(offscreen, screenX, screenY, screenTileSize, screenTileSize);
+      ctx.drawImage(scratch, screenX, screenY, width, height);
     },
-    [getOffscreenCanvas]
+    []
   );
 
   // Viewport state with pan/zoom
@@ -281,6 +318,34 @@ export function MosaicCanvas({
   // tileDataVersion, which changes on every single tile arrival and would
   // restart the loader's debounce continuously.
   const [tileInvalidation, setTileInvalidation] = useState(0);
+
+  // The one way a tile enters the cache, used by both the loader and the
+  // WebSocket/local-save path so the decode and lifecycle rules exist once.
+  const storeTile = useCallback((key: string, rgb: Uint8Array) => {
+    const cache = tileDataRef.current;
+    const entry: TileEntry = { bitmap: null };
+    // Insert synchronously: the loader treats "present" as "do not refetch",
+    // and inserting only after the decode would re-request the tile on every
+    // pass during the decode window.
+    cache.set(key, entry);
+
+    createImageBitmap(rgbToImageData(rgb))
+      .then((bitmap) => {
+        // Evicted or superseded while decoding — identity says so. Attaching
+        // now would resurrect a dead entry or clobber a newer one.
+        if (cache.get(key) !== entry) {
+          bitmap.close();
+          return;
+        }
+        entry.bitmap = bitmap;
+        setTileDataVersion((n) => n + 1);
+      })
+      .catch(() => {
+        // Decode failed: drop the entry so the tile can be fetched again
+        // rather than sitting cached-but-blank forever.
+        if (cache.get(key) === entry) cache.delete(key);
+      });
+  }, []);
 
   // Coalesced retry for tiles whose fetch failed outright. One timer for the
   // whole burst: a server hiccup fails many tiles at once and they all want the
@@ -434,8 +499,15 @@ export function MosaicCanvas({
         }
       });
 
-      // Draw loaded tile data on top (sharp tiles replace blurry chunk preview)
-      tileDataRef.current.forEach((rgb, key) => {
+      // Draw loaded tile data on top (sharp tiles replace blurry chunk preview).
+      // Set once for the whole batch rather than per tile: every tile is a
+      // nearest-neighbour magnification of a 32px source.
+      ctx.imageSmoothingEnabled = false;
+      tileDataRef.current.forEach((entry, key) => {
+        // Still decoding. The chunk image already covers this square, so
+        // skipping is the correct fallback for the few ms it takes.
+        if (!entry.bitmap) return;
+
         const [tileX, tileY] = key.split(":").map(Number);
 
         // Calculate exact pixel boundaries using rounding to avoid seams
@@ -443,11 +515,12 @@ export function MosaicCanvas({
         const y1 = Math.round((tileY * TILE_SIZE - offsetY) * s);
         const x2 = Math.round(((tileX + 1) * TILE_SIZE - offsetX) * s);
         const y2 = Math.round(((tileY + 1) * TILE_SIZE - offsetY) * s);
-        const tileW = x2 - x1;
 
         // Only draw if tile is visible in viewport
         if (x2 > 0 && x1 < width && y2 > 0 && y1 < height) {
-          renderTileData(ctx, x1, y1, rgb, tileW);
+          // Height from y2 - y1, not the width: rounding can make them differ
+          // by a device pixel, and reusing the width left a seam.
+          ctx.drawImage(entry.bitmap, x1, y1, x2 - x1, y2 - y1);
         }
       });
 
@@ -457,11 +530,10 @@ export function MosaicCanvas({
         const y1 = Math.round((tilePreview.y * TILE_SIZE - offsetY) * s);
         const x2 = Math.round(((tilePreview.x + 1) * TILE_SIZE - offsetX) * s);
         const y2 = Math.round(((tilePreview.y + 1) * TILE_SIZE - offsetY) * s);
-        const tileW = x2 - x1;
 
         // Only draw if preview tile is visible
         if (x2 > 0 && x1 < width && y2 > 0 && y1 < height) {
-          renderTileData(ctx, x1, y1, tilePreview.pixelData, tileW);
+          renderPreviewTile(ctx, x1, y1, tilePreview.pixelData, x2 - x1, y2 - y1);
         }
       }
 
@@ -536,7 +608,7 @@ export function MosaicCanvas({
     mosaicOverview,
     getVisibleChunks,
     screenTileSize,
-    renderTileData,
+    renderPreviewTile,
     showGrid,
     tilePreview,
     selectedTile,
@@ -594,12 +666,12 @@ export function MosaicCanvas({
 
     // Handle tile pixel data for Level 2 (instant, no need to wait for backend)
     if (tileUpdate.pixelData) {
-      tileDataRef.current.set(key, tileUpdate.pixelData!);
+      storeTile(key, tileUpdate.pixelData!);
       setTileDataVersion((n) => n + 1); // Trigger re-render
       onTileUpdateProcessed?.();
     }
     // Chunk and overview updates are handled separately via WebSocket messages
-  }, [tileUpdate, onTileUpdateProcessed]);
+  }, [tileUpdate, onTileUpdateProcessed, storeTile]);
 
   // Process chunk updates (from WebSocket) - Level 1 chunk images
   useEffect(() => {
@@ -801,9 +873,9 @@ export function MosaicCanvas({
               return;
             }
 
-            // Got valid tile data - add to LRU cache
-            tileCache.set(key, result);
-            setTileDataVersion((n) => n + 1); // Trigger re-render
+            // Got valid tile data - decode it into the cache. storeTile bumps
+            // tileDataVersion itself once the bitmap is ready to draw.
+            storeTile(key, result);
           })
           .catch(() => {
             loading.delete(key);
@@ -825,6 +897,7 @@ export function MosaicCanvas({
     getVisibleTiles,
     // tileDataVersion not needed - we check the ref directly
     tileInvalidation, // but a chunk update marks tiles stale, which must refetch
+    storeTile, // stable; decodes an arriving tile into the cache
     scheduleFailedTileRetry, // stable; bumps tileInvalidation after a failure
     offsetX,
     offsetY,
@@ -900,18 +973,30 @@ export function MosaicCanvas({
     resetView();
   }, [isCanvasReady, resetView]);
 
-  // Schedule a redraw using requestAnimationFrame
-  // Batches multiple draw requests into a single frame
+  // Always paint the newest state, not whichever one first asked for a frame.
+  //
+  // The pending frame used to hold the drawCanvas captured when it was
+  // scheduled, and every later request returned early without re-arming — so
+  // any state that changed before the frame ran was drawn stale, and never
+  // redrawn afterwards. Tiles arrive in bursts of MAX_CONCURRENT per round
+  // trip and each one bumps a version counter, so most of a Level 2 fill was
+  // being dropped this way. Reading the latest drawCanvas out of a ref at
+  // frame time keeps the coalescing while always drawing current state.
+  const drawCanvasRef = useRef(drawCanvas);
+  useEffect(() => {
+    drawCanvasRef.current = drawCanvas;
+  }, [drawCanvas]);
+
   const scheduleRedraw = useCallback(() => {
-    if (pendingDrawRef.current) return; // Already scheduled
+    if (pendingDrawRef.current) return; // A frame is already coming
 
     pendingDrawRef.current = true;
     rafIdRef.current = requestAnimationFrame(() => {
       pendingDrawRef.current = false;
       rafIdRef.current = null;
-      drawCanvas();
+      drawCanvasRef.current();
     });
-  }, [drawCanvas]);
+  }, []);
 
   // Cleanup RAF on unmount
   useEffect(() => {
@@ -922,13 +1007,18 @@ export function MosaicCanvas({
     };
   }, []);
 
-  // Redraw canvas when dependencies change (only after canvas is ready)
-  // Uses RAF batching to prevent multiple redraws per frame
+  // Redraw canvas when dependencies change (only after canvas is ready).
+  // Uses RAF batching to prevent multiple redraws per frame.
+  //
+  // `drawCanvas` is the dependency that matters: its identity changes whenever
+  // anything it paints changes, and that is what asks for the next frame.
+  // scheduleRedraw is stable now, so depending on it alone would run this once
+  // and never repaint again.
   useEffect(() => {
     if (isCanvasReady) {
       scheduleRedraw();
     }
-  }, [isCanvasReady, scheduleRedraw]);
+  }, [isCanvasReady, scheduleRedraw, drawCanvas]);
 
   // Global mouse handlers during drag
   useEffect(() => {
