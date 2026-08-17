@@ -6,6 +6,7 @@ import { loadChunkImage, getChunkVersion } from "../api/chunks";
 import { tileLoader, TILE_CANCELLED } from "../utils/tileLoader";
 import { rgbToImageData } from "../utils/pixels";
 import { LRUCache } from "../utils/lruCache";
+import { classifyWheel, type WheelLike } from "../utils/wheel";
 import { ZoomControls } from "./ZoomControls";
 import type {
   TileCoordinates,
@@ -23,8 +24,16 @@ const CHUNKS_PER_ROW = GRID_WIDTH / CHUNK_SIZE; // 10
 const GRID_THRESHOLD = 19; // ~60% zoom
 
 // Cache size limits to prevent memory leaks
-const MAX_TILE_CACHE_SIZE = 1000; // Max tiles to keep in memory (~3MB)
-const MAX_CHUNK_CACHE_SIZE = 50; // Max chunks to keep in memory (~150MB max)
+const MAX_TILE_CACHE_SIZE = 1000; // Max tiles to keep in memory (1000 x 3072 B = ~3 MB)
+// Max chunks to keep in memory. Chunk images are 2048x2048 (CHUNK_PREVIEW_SIZE
+// in chunk_renderer.py), so a decoded RGBA bitmap is 2048*2048*4 = 16.8 MB and
+// 50 of them is a ~839 MB ceiling — not the ~150 MB this comment used to claim,
+// which corresponded to 0.72 bytes/pixel and no raster format. It is a ceiling
+// rather than a resident figure because the browser owns the decoded data for an
+// HTMLImageElement and may drop it when the image is not being painted; that is
+// also why switching to ImageBitmap is not the obvious win it looks like, since
+// an ImageBitmap is pinned until close(). See input-and-mobile.md phase 3.
+const MAX_CHUNK_CACHE_SIZE = 50;
 
 interface ChunkCache {
   image: HTMLImageElement;
@@ -432,6 +441,14 @@ export function MosaicCanvas({
     tilePreview,
     selectedTile,
     selectionPulse,
+    // Assigning canvas.width on resize *clears* the surface, so a resize must
+    // always schedule a repaint. Nothing else here changes when only the size
+    // does: the viewport is untouched once hasUserAdjustedView gates off the
+    // re-fit, and getVisibleChunks keys on offset/zoom. Without these two the
+    // canvas stayed blank after any resize that followed a pan, until some
+    // unrelated state happened to redraw it.
+    canvasSize.width,
+    canvasSize.height,
   ]);
 
   // Animation loop for selection indicator pulse
@@ -788,9 +805,8 @@ export function MosaicCanvas({
   }, [isDragging, pan, markViewAdjusted]);
 
   // Wheel handler for zooming/panning (native event for passive: false)
-  // - Trackpad pinch (ctrlKey=true): zoom
-  // - Mouse wheel (deltaMode=1, line-based): zoom
-  // - Trackpad 2-finger swipe (ctrlKey=false, deltaMode=0): pan
+  // Intent classification lives in utils/wheel.ts — see the note there on why
+  // deltaMode alone cannot separate a mouse wheel from a trackpad swipe.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -799,22 +815,17 @@ export function MosaicCanvas({
       e.preventDefault();
       markViewAdjusted();
 
-      const rect = canvas.getBoundingClientRect();
-      const canvasX = e.clientX - rect.left;
-      const canvasY = e.clientY - rect.top;
+      const intent = classifyWheel(e as WheelLike);
 
-      // Pinch gesture on trackpad sends ctrlKey=true
-      // Mouse wheel typically has deltaMode=1 (line-based)
-      const isPinch = e.ctrlKey;
-      const isMouseWheel = e.deltaMode === 1;
-
-      if (isPinch || isMouseWheel) {
-        // Zoom
+      if (intent === "zoom") {
+        const rect = canvas.getBoundingClientRect();
+        const canvasX = e.clientX - rect.left;
+        const canvasY = e.clientY - rect.top;
         const factor = e.deltaY > 0 ? 0.9 : 1.1;
         zoomAt(canvasX, canvasY, factor);
       } else {
-        // Pan (trackpad 2-finger swipe)
-        // pan() already converts screen pixels to world coordinates
+        // Trackpad 2-finger swipe.
+        // pan() already converts screen pixels to world coordinates.
         pan(-e.deltaX, -e.deltaY);
       }
     };
