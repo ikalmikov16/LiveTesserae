@@ -65,9 +65,9 @@ function tileCacheCapacity(cssWidth: number, cssHeight: number): number {
   const perColumn = Math.ceil(cssHeight / LEVEL_1_THRESHOLD) + 1;
   return Math.max(MIN_TILE_CACHE_SIZE, Math.ceil(perRow * perColumn * 1.25));
 }
-// Max chunks to keep in memory. Chunk images are 2048x2048 (CHUNK_PREVIEW_SIZE
-// in chunk_renderer.py), so a decoded RGBA bitmap is 2048*2048*4 = 16.8 MB and
-// 50 of them is a ~839 MB ceiling — not the ~150 MB this comment used to claim,
+// Max chunks to keep in memory. Chunk images are 2000x2000 (CHUNK_PREVIEW_SIZE
+// in chunk_renderer.py), so a decoded RGBA bitmap is 2000*2000*4 = 16 MB and
+// 50 of them is a ~800 MB ceiling — not the ~150 MB this comment used to claim,
 // which corresponded to 0.72 bytes/pixel and no raster format. It is a ceiling
 // rather than a resident figure because the browser owns the decoded data for an
 // HTMLImageElement and may drop it when the image is not being painted; that is

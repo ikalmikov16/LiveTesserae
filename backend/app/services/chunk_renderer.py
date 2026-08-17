@@ -1,8 +1,8 @@
 """
 Chunk rendering service for multi-level pyramid.
 
-Level 0: Mosaic overview (2048x2048) - 2.048 pixels per tile
-Level 1: Chunk previews (2048x2048 each) - 20.48 pixels per tile
+Level 0: Mosaic overview (2000x2000) - 2 pixels per tile
+Level 1: Chunk previews (2000x2000 each) - 20 pixels per tile
 Level 2: Individual tiles (32x32 each) - stored as RGB bytes in database
 """
 
@@ -21,14 +21,45 @@ from app.services.database import db
 
 logger = logging.getLogger(__name__)
 
-# Rendering sizes - high quality for smoother transitions between zoom levels
-CHUNK_PREVIEW_SIZE = 2048  # pixels per chunk image (20.48 px/tile)
+# Rendering sizes.
+#
+# BOTH MUST DIVIDE EXACTLY BY THE GRID THEY HOLD. These were 2048, which gives
+# 20.48 px per tile and 204.8 px per chunk — and because every tile is resampled
+# and pasted on its own, a fractional stride means neighbouring tiles get
+# *different* cell sizes (20 px, then 21, then 20…) and therefore different
+# scale factors. Anything continuous across a tile edge lands half a pixel off,
+# which is the "slightly misaligned, thin lines between every tile" artifact.
+# Measured against a single-pass downscale of the same 3200x3200 chunk: 2048
+# was off by up to 98/255 on 1% of pixels; 2000 is off by 0.
+#
+#   CHUNK_PREVIEW_SIZE  / chunk_size (100)     = 20 px per tile   (exact)
+#   MOSAIC_PREVIEW_SIZE / chunks_per_row (10)  = 200 px per chunk (exact)
+#                                              = 2 px per tile    (exact)
+CHUNK_PREVIEW_SIZE = 2000  # pixels per chunk image (20 px/tile)
 # The overview was 5000x5000 and its re-encode cost 1716 ms — 9.4x the chunk
 # render, and the single biggest cost in a tile save. Zoom level 0 only engages
 # below 3 px/tile, so the overview is never displayed wider than ~3000 px:
 # 5000x5000 was ~2.8x more pixels than can ever reach a screen. Measured ~6x
-# cheaper in CPU and bytes at 2048, with no visible quality loss.
-MOSAIC_PREVIEW_SIZE = 2048  # pixels for full overview (2.048 px/tile)
+# cheaper in CPU and bytes at this size, with no visible quality loss.
+MOSAIC_PREVIEW_SIZE = 2000  # pixels for full overview (2 px/tile)
+
+# Resampling filter for every downscale in the pyramid: tile -> chunk cell and
+# chunk -> overview cell.
+#
+# This was LANCZOS, a windowed sinc whose negative lobes overshoot at any
+# high-contrast edge. On its own that is just a sharpening halo — but each tile
+# is resampled in ISOLATION, so the overshoot is clamped at the tile border
+# instead of continuing into the neighbour. The halo therefore stops dead at
+# every cell boundary and paints a grid of thin light/dark lines over the
+# artwork, exactly on the tile lattice. Measured on a real chunk: LANCZOS
+# produced pixels at 244 and 0 where the source tiles never left 11..223.
+#
+# BOX is a plain area average: no negative lobes, so it cannot leave the source
+# range, and its support is exactly one destination pixel wide. At an exact
+# 32 -> 20 stride that makes per-tile resampling identical to downscaling the
+# whole composited 3200x3200 chunk in one pass — verified max difference 0 —
+# so the seams are gone by construction rather than by tuning.
+DOWNSCALE_FILTER = Image.Resampling.BOX
 
 # WebP encode settings, shared by every render path.
 #
@@ -49,7 +80,7 @@ _image_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pil_work
 # Releasing between the render call and the caller's save lets a second writer
 # read the same pre-image and clobber the first writer's tile.
 #
-# Memory: a 2048x2048 RGB buffer is ~12.6 MB, and decode + resize + encode holds
+# Memory: a 2000x2000 RGB buffer is ~12 MB, and decode + resize + encode holds
 # several at once. A 1 GB Fargate task cannot afford concurrent renders, so all
 # render paths — the background task after a tile save, the coalesced overview
 # rebuild, and the on-demand renders in the chunks API — share this one permit.
@@ -65,6 +96,27 @@ def _encode_webp(img: Image.Image) -> bytes:
     buffer = io.BytesIO()
     img.save(buffer, format="WEBP", quality=WEBP_QUALITY, method=WEBP_METHOD)
     return buffer.getvalue()
+
+
+def _has_size(image_data: bytes, expected: int) -> bool:
+    """
+    True if stored image data is expected x expected pixels.
+
+    Cheap — PIL only parses the WebP header here, it never decodes the pixels.
+
+    Every incremental path pastes into an image it read back from storage, at
+    coordinates derived from the CURRENT preview size. An image written under a
+    different size is not a stale-looking image, it is a wrong one: the paste
+    lands at the wrong coordinates and whatever the old image held past the new
+    bounds survives forever, because a chunk is only rebuilt when its image is
+    *missing*. So a size change has to force a rebuild, not a composite.
+    """
+    try:
+        with Image.open(io.BytesIO(image_data)) as img:
+            return img.size == (expected, expected)
+    except Exception as e:
+        logger.warning(f"Could not read stored image header, treating as stale: {e}")
+        return False
 
 
 def rgb_bytes_to_image(pixel_data: bytes) -> Image.Image:
@@ -101,8 +153,9 @@ def _get_tile_bounds_in_chunk(
 
     Returns: (x, y, width, height)
     """
-    # Calculate exact floating-point positions
-    pixels_per_tile = CHUNK_PREVIEW_SIZE / settings.chunk_size  # 10.24
+    # Exact at the current sizes (20.0), but keep the rounding: it is what makes
+    # the cells abut with no gap if the sizes ever stop dividing evenly.
+    pixels_per_tile = CHUNK_PREVIEW_SIZE / settings.chunk_size  # 20.0
 
     x1 = round(local_tx * pixels_per_tile)
     y1 = round(local_ty * pixels_per_tile)
@@ -120,7 +173,7 @@ def _get_chunk_bounds_in_overview(cx: int, cy: int) -> tuple[int, int, int, int]
     Returns: (x, y, width, height)
     """
     chunks_per_row = settings.grid_width // settings.chunk_size  # 10
-    pixels_per_chunk = MOSAIC_PREVIEW_SIZE / chunks_per_row  # 204.8
+    pixels_per_chunk = MOSAIC_PREVIEW_SIZE / chunks_per_row  # 200.0
 
     x1 = round(cx * pixels_per_chunk)
     y1 = round(cy * pixels_per_chunk)
@@ -158,7 +211,7 @@ def _update_chunk_tile_sync(
     if tile_data:
         # Convert RGB bytes to image and paste
         tile_img = rgb_bytes_to_image(tile_data)
-        tile_img = tile_img.resize((tw, th), Image.Resampling.LANCZOS)
+        tile_img = tile_img.resize((tw, th), DOWNSCALE_FILTER)
         chunk_img.paste(tile_img, (px, py))
     else:
         # Clear the tile (draw white rectangle)
@@ -179,11 +232,20 @@ async def load_or_render_chunk_image(cx: int, cy: int) -> bytes:
     and a wrong one now exists. Verified: 6 drawn tiles wiped by one unrelated
     edit against an empty image store, which is exactly a fresh deploy.
 
+    An image stored at a different CHUNK_PREVIEW_SIZE counts as missing, for the
+    same reason: see _has_size.
+
     The caller must already hold render_semaphore (the permit is not reentrant).
     """
     existing = await storage.get_chunk_image(cx, cy)
     if existing is not None:
-        return existing
+        if _has_size(existing, CHUNK_PREVIEW_SIZE):
+            return existing
+        logger.info(
+            f"Chunk ({cx}, {cy}) image is not {CHUNK_PREVIEW_SIZE}px, "
+            "rebuilding from database instead of compositing into it"
+        )
+        return await render_chunk(cx, cy)
 
     logger.info(
         f"Chunk ({cx}, {cy}) image missing, rebuilding from database "
@@ -222,12 +284,15 @@ async def update_chunk_tile(
     return result
 
 
-def _render_chunk_sync(
+def _composite_chunk_image(
     cx: int, cy: int, rows: list[dict], parse_tile_id_func
-) -> tuple[bytes, int]:
+) -> tuple[Image.Image, int]:
     """
-    Synchronous PIL operations for render_chunk.
-    Runs in thread pool to avoid blocking the event loop.
+    Composite every tile of a chunk into one image, before encoding.
+
+    Split out from _render_chunk_sync so the geometry can be asserted on its
+    own: the WebP encode is lossy, and on high-frequency pixel art it moves
+    values far enough to hide whether the resampling itself was exact.
     """
     chunk_img = Image.new(
         "RGB", (CHUNK_PREVIEW_SIZE, CHUNK_PREVIEW_SIZE), (255, 255, 255)
@@ -249,7 +314,7 @@ def _render_chunk_sync(
                 local_ty = ty - start_y
                 px, py, tw, th = _get_tile_bounds_in_chunk(local_tx, local_ty)
 
-                tile_img = tile_img.resize((tw, th), Image.Resampling.LANCZOS)
+                tile_img = tile_img.resize((tw, th), DOWNSCALE_FILTER)
                 chunk_img.paste(tile_img, (px, py))
                 tiles_rendered += 1
             except Exception as e:
@@ -257,6 +322,17 @@ def _render_chunk_sync(
                     f"Failed to render tile {row['tile_id']} into chunk: {e}"
                 )
 
+    return chunk_img, tiles_rendered
+
+
+def _render_chunk_sync(
+    cx: int, cy: int, rows: list[dict], parse_tile_id_func
+) -> tuple[bytes, int]:
+    """
+    Synchronous PIL operations for render_chunk.
+    Runs in thread pool to avoid blocking the event loop.
+    """
+    chunk_img, tiles_rendered = _composite_chunk_image(cx, cy, rows, parse_tile_id_func)
     return _encode_webp(chunk_img), tiles_rendered
 
 
@@ -324,7 +400,7 @@ def _update_overview_chunks_sync(
 
         # Paste the updated chunk
         chunk_img = Image.open(io.BytesIO(chunk_data)).convert("RGB")
-        chunk_img = chunk_img.resize((cw, ch), Image.Resampling.LANCZOS)
+        chunk_img = chunk_img.resize((cw, ch), DOWNSCALE_FILTER)
         overview_img.paste(chunk_img, (px, py))
 
     return _encode_webp(overview_img)
@@ -344,7 +420,9 @@ async def update_overview_chunks(chunks: list[tuple[int, int, bytes]]) -> bytes:
 
     Falls back to a full re-render when no overview exists yet: pasting onto a
     fresh white image would erase every chunk outside this batch, the Level-0
-    half of the cold-storage wipe (see load_or_render_chunk_image).
+    half of the cold-storage wipe (see load_or_render_chunk_image). An overview
+    stored at a different MOSAIC_PREVIEW_SIZE takes the same path (see
+    _has_size).
 
     Args:
         chunks: (cx, cy, WebP image data) for each chunk to paste
@@ -359,6 +437,13 @@ async def update_overview_chunks(chunks: list[tuple[int, int, bytes]]) -> bytes:
         logger.info(
             "Overview image missing, re-rendering from all chunks "
             "instead of compositing onto white"
+        )
+        return await render_mosaic_overview()
+
+    if not _has_size(existing_overview, MOSAIC_PREVIEW_SIZE):
+        logger.info(
+            f"Overview image is not {MOSAIC_PREVIEW_SIZE}px, re-rendering from "
+            "all chunks instead of compositing into it"
         )
         return await render_mosaic_overview()
 
@@ -391,7 +476,7 @@ def _render_mosaic_overview_sync(
                 chunk_img = Image.open(io.BytesIO(chunk_data)).convert("RGB")
                 # Get exact bounds for this chunk
                 px, py, cw, ch = _get_chunk_bounds_in_overview(cx, cy)
-                chunk_img = chunk_img.resize((cw, ch), Image.Resampling.LANCZOS)
+                chunk_img = chunk_img.resize((cw, ch), DOWNSCALE_FILTER)
                 mosaic_img.paste(chunk_img, (px, py))
                 chunks_rendered += 1
             except Exception as e:
@@ -404,7 +489,7 @@ def _render_mosaic_overview_sync(
 
 async def render_mosaic_overview() -> bytes:
     """
-    Render Level 0 by compositing all Level 1 chunk images into 2048x2048.
+    Render Level 0 by compositing all Level 1 chunk images into the overview.
     Use this for initial rendering or full re-renders (e.g., from render_chunks.py).
     For incremental chunk updates, use update_overview_chunks() instead.
 

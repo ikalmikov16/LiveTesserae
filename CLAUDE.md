@@ -70,8 +70,8 @@ The old AWS account (`199264265773`) is permanently closed and every identifier 
 4. Separately, `services/overview.py` rebuilds the Level-0 overview at most once every `overview_coalesce_seconds` (default 5), folding in every chunk that went dirty in that window, then broadcasts `overview_updated`
 
 **Three render levels** (client picks by zoom in `MosaicCanvas.tsx`):
-- Level 0: single 2048×2048 overview WebP
-- Level 1: 10×10 grid of 2048×2048 chunk WebPs (each chunk = 100×100 tiles)
+- Level 0: single 2000×2000 overview WebP
+- Level 1: 10×10 grid of 2000×2000 chunk WebPs (each chunk = 100×100 tiles)
 - Level 2: individual tiles fetched as raw RGB bytes from Postgres
 
 **Key modules:**
@@ -87,7 +87,10 @@ The old AWS account (`199264265773`) is permanently closed and every identifier 
 ## Critical invariants
 
 - **Tile pixel format is a contract**: exactly 3072 bytes = 32×32×3 RGB, row-major. Enforced in `api/tiles.py`, `utils/pixels.ts`, and the DB `BYTEA` column. Never change one side alone.
-- **Grid constants exist in three places and must match**: `backend/app/config.py`, `frontend/src/config.ts`, and `backend/scripts/render_chunks.py` (also `CHUNK_PREVIEW_SIZE`/`MOSAIC_PREVIEW_SIZE` duplicated between `chunk_renderer.py` and `render_chunks.py`). Prefer deduplicating over adding a fourth copy.
+- **Grid constants exist in two places and must match**: `backend/app/config.py` and `frontend/src/config.ts`. `backend/scripts/render_chunks.py` used to hold a third copy of `CHUNK_PREVIEW_SIZE`/`MOSAIC_PREVIEW_SIZE`/`WEBP_*` plus its own duplicate of the bounds helpers, all labelled "must match backend!"; it now imports them from `chunk_renderer`. Keep it that way — a chunk the script writes has to be pixel-identical to one the app writes incrementally for the same tiles.
+- **Preview sizes must divide their grid exactly.** `CHUNK_PREVIEW_SIZE / chunk_size` and `MOSAIC_PREVIEW_SIZE / chunks_per_row` must both be whole numbers (2000 → 20 px per tile, 200 px per chunk). Every tile is resampled and pasted individually, so a fractional stride hands neighbouring tiles *different* cell sizes — 20 px, then 21 — and therefore different scale factors, which shifts anything continuous across a tile edge by up to half a pixel. That was 2048, and it drew a thin line on every tile boundary. Guarded by `test_every_tile_cell_is_the_same_size`.
+- **The pyramid downscales with `BOX`, never a windowed sinc.** Because each tile is resampled in isolation, LANCZOS's negative lobes overshoot at high-contrast edges and then get clamped at the cell border, so the halo stops dead on the tile lattice and paints a grid over the artwork (measured: pixels at 244 and 0 from source data that never left 11..223). `BOX` is an area average, so it cannot leave the source range, and at a whole-number stride per-tile resampling is bit-identical to downscaling the whole composited 3200×3200 chunk in one pass. Guarded by `test_per_tile_downscale_matches_a_single_pass_downscale`.
+- **Changing either preview size invalidates every stored image.** The incremental paths paste into an image read back from storage at coordinates derived from the *current* size, so an image written at the old size is wrong, not merely stale — and a chunk is only rebuilt when its image is *missing*. `chunk_renderer._has_size` forces a rebuild instead; after such a change still run `render_chunks.py` rather than letting traffic pay for it.
 - **ID formats differ by context**: DB/WS ids use colons (`tile_id "x:y"`, `chunk_id "cx:cy"`); storage/S3 file keys use underscores (`{cx}_{cy}.webp`). Easy to mix up.
 - **Single-instance assumption**: rate limiter, WS manager, stats cache, and `chunk_versions.json` version tracking are all in-process/file state. **Never scale the `app` compose service past one container** — a second copy cannot see the first one's WebSocket clients and the two would clobber each other's image writes. `backend/deploy.sh` replaces the container rather than running two, accepting a few seconds of downtime to keep that guarantee. Lifting this means moving the state to shared storage (Postgres already has an unused `chunks.version` column — the natural home).
 - **Schema changes**: no migration tool. `schema.sql` runs idempotently on startup (`CREATE ... IF NOT EXISTS`); manual `ALTER`s for existing deployments are documented as comments in that file.
@@ -115,7 +118,7 @@ The old AWS account (`199264265773`) is permanently closed and every identifier 
 
 ## Render concurrency rules (load-bearing — read before touching the render path)
 
-`chunk_renderer.render_semaphore` serialises every image render in the process. Two independent reasons: a 2048x2048 RGB buffer is ~12.6 MB and decode + resize + encode holds several at once on a 1 GB task, and the read → composite → save sequence must not interleave.
+`chunk_renderer.render_semaphore` serialises every image render in the process. Two independent reasons: a 2000x2000 RGB buffer is ~12 MB and decode + resize + encode holds several at once on a 1 GB task, and the read → composite → save sequence must not interleave.
 
 - **Acquire it at the outermost call site only.** `asyncio.Semaphore` is not reentrant; a nested acquire deadlocks permanently with no timeout and no recovery (verified on 3.12).
 - **The hold must span read → composite → save.** Releasing between the render call and the caller's save lets a second writer read the same pre-image and silently drop the first writer's tile.
@@ -129,7 +132,7 @@ The old AWS account (`199264265773`) is permanently closed and every identifier 
 
 The overview used to be re-encoded inside every tile save at 5000×5000, costing **1726 ms** — 9.4× the chunk render — and capping the *whole site* at ~0.5 saves/sec. Five people drawing one tile per 2 s each saw updates arrive 27 s after they stopped; the person drawing never noticed (their PUT returns in ~20 ms). Two changes removed it:
 
-- **2048×2048 + `method=0` WebP**: the same incremental overview update measured **1726 ms → 291 ms** (encode alone 1563 → 112 ms) for ~40 KB more per image. Zoom level 0 only engages below 3 px/tile, so the overview is never displayed wider than ~3000 px — 5000×5000 was ~2.8× more pixels than could ever reach a screen.
+- **2048×2048 + `method=0` WebP**: the same incremental overview update measured **1726 ms → 291 ms** (encode alone 1563 → 112 ms) for ~40 KB more per image. Zoom level 0 only engages below 3 px/tile, so the overview is never displayed wider than ~3000 px — 5000×5000 was ~2.8× more pixels than could ever reach a screen. (Since trimmed to 2000×2000 so the stride divides evenly; ~5% fewer pixels, same order of cost.)
 - **Coalescing**: a save no longer renders the overview at all. It marks `chunks.dirty` and `services/overview.py` rebuilds once per window, so the cost is now independent of the edit rate (verified: 6 saves → 1 overview render).
 
 Per-save cost is now the chunk render alone. `WEBP_METHOD` in `chunk_renderer.py` is the dial if bytes ever matter more than latency.

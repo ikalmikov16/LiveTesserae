@@ -1,16 +1,20 @@
 """Tests for PIL-based chunk and overview rendering."""
 
 import io
+import random
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops
 
 from app.config import settings
 from app.services.chunk_renderer import (
     CHUNK_PREVIEW_SIZE,
+    DOWNSCALE_FILTER,
     MOSAIC_PREVIEW_SIZE,
+    _composite_chunk_image,
     _get_chunk_bounds_in_overview,
     _get_tile_bounds_in_chunk,
+    _has_size,
     _render_chunk_sync,
     _render_mosaic_overview_sync,
     _update_chunk_tile_sync,
@@ -94,6 +98,26 @@ def test_get_tile_bounds_no_gaps():
         prev_end = x + w
         total_width = x + w
     assert total_width == CHUNK_PREVIEW_SIZE
+
+
+def test_every_tile_cell_is_the_same_size():
+    """
+    Abutting is not enough — every cell must also be IDENTICAL.
+
+    At CHUNK_PREVIEW_SIZE=2048 the cells alternated 20 px, 21 px, 20 px, so
+    neighbouring tiles were scaled by different factors and anything continuous
+    across a tile edge landed up to half a pixel off. That half pixel is the
+    thin line users saw on every tile boundary.
+    """
+    widths = {_get_tile_bounds_in_chunk(i, 0)[2] for i in range(settings.chunk_size)}
+    assert widths == {CHUNK_PREVIEW_SIZE // settings.chunk_size}
+
+
+def test_every_chunk_cell_in_overview_is_the_same_size():
+    """Same invariant one level up: chunk -> overview must be a whole ratio."""
+    chunks_per_row = settings.grid_width // settings.chunk_size
+    widths = {_get_chunk_bounds_in_overview(i, 0)[2] for i in range(chunks_per_row)}
+    assert widths == {MOSAIC_PREVIEW_SIZE // chunks_per_row}
 
 
 # ── chunk bounds in overview ────────────────────────────────────────────
@@ -227,3 +251,100 @@ def test_render_mosaic_overview_sync_empty():
     img = open_webp(data)
     assert img.size == (MOSAIC_PREVIEW_SIZE, MOSAIC_PREVIEW_SIZE)
     assert img.getpixel((0, 0)) == (255, 255, 255)
+
+
+# ── seam-free downscale (the tile-boundary line bug) ────────────────────
+
+
+def _noisy_tile(seed: int) -> bytes:
+    """A 32x32 tile of high-contrast content, deterministic per seed."""
+    rng = random.Random(seed)
+    return bytes(rng.choice((17, 240)) for _ in range(3072))
+
+
+def test_per_tile_downscale_matches_a_single_pass_downscale():
+    """
+    The whole point of the pyramid geometry: resampling each tile on its own
+    must give the SAME image as compositing every tile at full 32 px and
+    downscaling the chunk once. If it does not, the difference lands on the
+    tile lattice and reads as a grid of thin lines over the artwork.
+
+    Only holds because the cell stride is a whole number of pixels and
+    DOWNSCALE_FILTER's support is exactly one destination pixel. With
+    2048 px chunks and LANCZOS this differed by up to 98/255.
+    """
+    side = 8  # 8x8 tiles is enough to expose a per-tile stride error
+    tiles = {
+        (tx, ty): _noisy_tile(tx * 100 + ty) for tx in range(side) for ty in range(side)
+    }
+
+    # Ground truth: one composite at full resolution, one downscale.
+    full = Image.new("RGB", (side * 32, side * 32))
+    for (tx, ty), data in tiles.items():
+        full.paste(rgb_bytes_to_image(data), (tx * 32, ty * 32))
+    cell = CHUNK_PREVIEW_SIZE // settings.chunk_size
+    expected = full.resize((side * cell, side * cell), DOWNSCALE_FILTER)
+
+    # What the renderer actually produces, tile by tile. Compared before the
+    # WebP encode: it is lossy, and on noise this dense it moves values by up
+    # to 240, which would swamp the geometry error this test exists to catch.
+    rows = [
+        {"tile_id": f"{tx}:{ty}", "pixel_data": data}
+        for (tx, ty), data in tiles.items()
+    ]
+    composite, count = _composite_chunk_image(0, 0, rows, parse_tile_id)
+    assert count == side * side
+    actual = composite.crop((0, 0, side * cell, side * cell))
+
+    diff = ImageChops.difference(actual, expected).getbbox()
+    assert (
+        diff is None
+    ), f"per-tile render differs from a single-pass downscale at {diff}"
+
+
+def test_downscale_never_leaves_the_source_colour_range():
+    """
+    LANCZOS overshoots at high-contrast edges, and because each tile is
+    resampled in isolation the overshoot stops dead at the cell border — a
+    bright rim on every tile edge. An averaging filter cannot leave the range
+    its inputs came from, so this is the property that rules the halo out.
+
+    Checked on the composite, before the lossy encode, for the same reason as
+    above: WebP alone will happily produce 0 and 255 from this input.
+    """
+    cell = CHUNK_PREVIEW_SIZE // settings.chunk_size
+    rows = [
+        {"tile_id": f"{tx}:{ty}", "pixel_data": _noisy_tile(tx * 7 + ty)}
+        for tx in range(6)
+        for ty in range(6)
+    ]
+    composite, _ = _composite_chunk_image(0, 0, rows, parse_tile_id)
+    rendered = composite.crop((0, 0, 6 * cell, 6 * cell))
+
+    # 17 and 240 are the only two values _noisy_tile ever emits.
+    for band, (lo, hi) in enumerate(rendered.getextrema()):
+        assert lo >= 17, f"band {band} undershoots the source minimum: {lo}"
+        assert hi <= 240, f"band {band} overshoots the source maximum: {hi}"
+
+
+# ── stale preview size forces a rebuild ─────────────────────────────────
+
+
+def test_has_size_accepts_a_current_image():
+    assert _has_size(make_test_chunk_webp(), CHUNK_PREVIEW_SIZE)
+
+
+def test_has_size_rejects_an_image_from_a_different_preview_size():
+    """
+    A stored image at the old size is not stale-looking, it is wrong: pastes
+    computed for the current geometry land in the wrong place and whatever the
+    old image held outside the new bounds never gets overwritten. Callers must
+    rebuild instead of compositing into it.
+    """
+    buf = io.BytesIO()
+    Image.new("RGB", (2048, 2048), (255, 0, 0)).save(buf, format="WEBP")
+    assert not _has_size(buf.getvalue(), CHUNK_PREVIEW_SIZE)
+
+
+def test_has_size_rejects_unreadable_data():
+    assert not _has_size(b"not an image", CHUNK_PREVIEW_SIZE)

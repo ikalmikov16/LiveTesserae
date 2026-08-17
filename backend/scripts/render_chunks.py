@@ -34,6 +34,21 @@ from PIL import Image
 from app.services import storage
 from app.config import settings
 
+# Imported, never re-declared. These used to be copied into this file with a
+# "must match backend!" comment, which is exactly how the copies drift: the
+# rendering geometry and the resampling filter are a contract with
+# chunk_renderer, and a chunk this script writes has to be pixel-identical to
+# one the app writes incrementally for the same tiles.
+from app.services.chunk_renderer import (  # noqa: E402
+    CHUNK_PREVIEW_SIZE,
+    DOWNSCALE_FILTER,
+    MOSAIC_PREVIEW_SIZE,
+    WEBP_METHOD,
+    WEBP_QUALITY,
+    _get_chunk_bounds_in_overview,
+    _get_tile_bounds_in_chunk,
+)
+
 
 def _rds_ssl_context():
     """Create SSL context for RDS connections when needed."""
@@ -49,34 +64,11 @@ def _rds_ssl_context():
 # Number of concurrent chunk renders
 DEFAULT_WORKERS = min(8, os.cpu_count() or 4)
 
-# These MUST match backend/app/services/chunk_renderer.py
-CHUNK_PREVIEW_SIZE = 2048  # pixels per chunk image (must match backend!)
-MOSAIC_PREVIEW_SIZE = 2048  # pixels for full overview (must match backend!)
-WEBP_QUALITY = 90  # must match backend!
-WEBP_METHOD = 0  # must match backend!
-
 
 def rgb_bytes_to_image(pixel_data: bytes) -> Image.Image:
     """Convert 3072 bytes of RGB data to a PIL Image."""
     arr = np.frombuffer(pixel_data, dtype=np.uint8).reshape((32, 32, 3))
     return Image.fromarray(arr, mode="RGB")
-
-
-def _get_tile_bounds_in_chunk(
-    local_tx: int, local_ty: int
-) -> tuple[int, int, int, int]:
-    """
-    Calculate exact pixel bounds for a tile within a chunk image.
-    Must match chunk_renderer._get_tile_bounds_in_chunk exactly!
-    """
-    pixels_per_tile = CHUNK_PREVIEW_SIZE / settings.chunk_size  # 20.48
-
-    x1 = round(local_tx * pixels_per_tile)
-    y1 = round(local_ty * pixels_per_tile)
-    x2 = round((local_tx + 1) * pixels_per_tile)
-    y2 = round((local_ty + 1) * pixels_per_tile)
-
-    return (x1, y1, x2 - x1, y2 - y1)
 
 
 async def render_chunk_optimized(pool, cx: int, cy: int) -> bytes:
@@ -114,7 +106,7 @@ async def render_chunk_optimized(pool, cx: int, cy: int) -> bytes:
     for row in rows:
         tile_data[row["tile_id"]] = row["pixel_data"]
 
-    # Create chunk image at CHUNK_PREVIEW_SIZE (2048×2048)
+    # Create chunk image at CHUNK_PREVIEW_SIZE
     chunk_img = Image.new(
         "RGB", (CHUNK_PREVIEW_SIZE, CHUNK_PREVIEW_SIZE), (255, 255, 255)
     )
@@ -131,7 +123,7 @@ async def render_chunk_optimized(pool, cx: int, cy: int) -> bytes:
 
                 # Get exact bounds for this tile (same as chunk_renderer)
                 px, py, tw, th = _get_tile_bounds_in_chunk(local_tx, local_ty)
-                tile_img = tile_img.resize((tw, th), Image.Resampling.LANCZOS)
+                tile_img = tile_img.resize((tw, th), DOWNSCALE_FILTER)
                 chunk_img.paste(tile_img, (px, py))
 
     # Convert to WebP (same settings as backend)
@@ -228,7 +220,6 @@ async def render_overview_optimized(pool) -> bytes:
     Uses same logic as chunk_renderer.py for consistency.
     """
     chunks_per_row = settings.grid_width // settings.chunk_size  # 10
-    pixels_per_chunk = MOSAIC_PREVIEW_SIZE / chunks_per_row  # 204.8
 
     overview_img = Image.new(
         "RGB", (MOSAIC_PREVIEW_SIZE, MOSAIC_PREVIEW_SIZE), (255, 255, 255)
@@ -241,16 +232,9 @@ async def render_overview_optimized(pool) -> bytes:
             if chunk_data:
                 chunk_img = Image.open(io.BytesIO(chunk_data)).convert("RGB")
 
-                # Calculate exact bounds (same as chunk_renderer._get_chunk_bounds_in_overview)
-                x1 = round(cx * pixels_per_chunk)
-                y1 = round(cy * pixels_per_chunk)
-                x2 = round((cx + 1) * pixels_per_chunk)
-                y2 = round((cy + 1) * pixels_per_chunk)
-
-                chunk_img = chunk_img.resize(
-                    (x2 - x1, y2 - y1), Image.Resampling.LANCZOS
-                )
-                overview_img.paste(chunk_img, (x1, y1))
+                px, py, cw, ch = _get_chunk_bounds_in_overview(cx, cy)
+                chunk_img = chunk_img.resize((cw, ch), DOWNSCALE_FILTER)
+                overview_img.paste(chunk_img, (px, py))
 
     # Convert to WebP
     buffer = io.BytesIO()

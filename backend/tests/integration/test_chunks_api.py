@@ -5,6 +5,7 @@ import io
 from PIL import Image
 
 from app.services import storage
+from app.services.chunk_renderer import CHUNK_PREVIEW_SIZE
 
 
 async def test_get_chunk_returns_webp(client):
@@ -17,7 +18,7 @@ async def test_get_chunk_empty(client):
     r = await client.get("/api/chunks/0/0")
     assert r.status_code == 200
     img = Image.open(io.BytesIO(r.content))
-    assert img.size == (2048, 2048)
+    assert img.size == (CHUNK_PREVIEW_SIZE, CHUNK_PREVIEW_SIZE)
 
 
 async def test_get_chunk_has_etag(client):
